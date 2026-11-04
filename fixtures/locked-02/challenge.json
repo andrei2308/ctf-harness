@@ -1,0 +1,9 @@
+{
+  "id": "locked-02",
+  "name": "locked",
+  "kind": "static",
+  "category": "crypto",
+  "points": 300,
+  "description": "The flag is encrypted; the key is not here.",
+  "flag": "CTF{this_is_only_known_to_the_grader_not_in_files}"
+}

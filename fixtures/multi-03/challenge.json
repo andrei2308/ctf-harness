@@ -1,0 +1,12 @@
+{
+  "id": "multi-03",
+  "name": "two-part forensics",
+  "kind": "static",
+  "category": "forensics",
+  "points": 400,
+  "description": "This challenge has two flags; submit both.",
+  "flags": [
+    "CTF{aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}",
+    "CTF{bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}"
+  ]
+}

@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ctf-harness"
+version = "0.1.0"
+description = "Autonomous agentic CTF harness (DefCamp 2026)"
+requires-python = ">=3.11"
+dependencies = []  # core is stdlib-only so the skeleton runs anywhere offline
+
+[project.optional-dependencies]
+# Install only what a given runtime needs; keeps the base image lean.
+anthropic = ["anthropic>=0.40"]
+openai = ["openai>=1.40"]
+mcp = ["mcp>=1.0"]
+web = ["requests>=2.31"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+ctf-harness = "harness.run:main"
+
+[tool.setuptools]
+packages = [
+    "harness", "harness.platforms", "harness.inference", "harness.scheduler",
+    "harness.flags", "harness.agents", "harness.telemetry",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

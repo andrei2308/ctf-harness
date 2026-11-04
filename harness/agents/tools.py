@@ -1,0 +1,389 @@
+"""Tools and tool profiles.
+
+A specialist agent acts only through tools. Each tool:
+  * declares a JSON-schema signature (vendor-neutral; the inference adapters
+    translate it to the backend's tool format),
+  * returns a ToolResult whose `output` bytes are REAL output — these become the
+    evidence the grounding guard scans. The model never sees a flag we did not
+    capture from a tool.
+
+Scope containment is enforced here, not trusted to the prompt: network tools are
+bound to the challenge's ConnInfo and refuse any other host. That operationalises
+"stay in scope / no internet": a specialist literally cannot open a socket to an
+address the platform did not hand it.
+
+Execution of shell commands goes through an Executor so the local dev sandbox
+(subprocess in a work dir) can be swapped for a hardened worker container
+(read-only rootfs, /input ro, /work rw, no runtime installs) without touching
+tool code.
+"""
+
+from __future__ import annotations
+
+import abc
+import socket
+import subprocess
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from ..platforms.base import ConnInfo
+
+MAX_TOOL_OUTPUT = 64 * 1024  # bytes fed back to the model per call (evidence store keeps more)
+
+
+@dataclass
+class ToolResult:
+    name: str
+    output: bytes                 # raw bytes produced; recorded as evidence
+    source: str                   # evidence label, e.g. "shell:cat flag"
+    exit_code: int | None = None
+    truncated: bool = False
+    error: str = ""               # set when the tool itself failed (not grounds for a flag)
+    meta: dict = field(default_factory=dict)
+
+    def as_text(self, limit: int = MAX_TOOL_OUTPUT) -> str:
+        body = self.output[:limit]
+        text = body.decode("utf-8", "replace")
+        if self.truncated or len(self.output) > limit:
+            text += f"\n…[truncated; {len(self.output)} bytes total]"
+        if self.error:
+            text = f"[tool error: {self.error}]\n" + text
+        return text
+
+
+# --------------------------------------------------------------------------- #
+# Execution backends                                                          #
+# --------------------------------------------------------------------------- #
+
+class Executor(abc.ABC):
+    """Runs shell commands somewhere. Swap LocalExecutor for a container executor
+    in production without changing any tool."""
+
+    @abc.abstractmethod
+    def run(self, cmd: str, cwd: Path, timeout: float) -> tuple[bytes, int]:
+        ...
+
+
+class LocalExecutor(Executor):
+    """Runs in a subprocess under `cwd`. For the LOCAL dev loop only.
+
+    Production MUST run commands in an isolated worker container: read-only
+    rootfs, writable /work + /artifacts, no network except the challenge target
+    and the model endpoint, digest-pinned image, no runtime installs. This class
+    deliberately does not pretend to sandbox; it just confines cwd and time.
+    """
+
+    def __init__(self, env: dict | None = None):
+        self._env = env or {}
+
+    def run(self, cmd: str, cwd: Path, timeout: float) -> tuple[bytes, int]:
+        try:
+            proc = subprocess.run(
+                ["bash", "-lc", cmd],
+                cwd=str(cwd),
+                env={"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(cwd), **self._env},
+                capture_output=True,
+                timeout=timeout,
+            )
+            return proc.stdout + proc.stderr, proc.returncode
+        except subprocess.TimeoutExpired as e:
+            partial = (e.stdout or b"") + (e.stderr or b"")
+            return partial + f"\n[timed out after {timeout}s]".encode(), 124
+
+
+# --------------------------------------------------------------------------- #
+# Tool context + base                                                         #
+# --------------------------------------------------------------------------- #
+
+@dataclass
+class ToolContext:
+    """Everything a tool needs for one challenge. Built by the agent per attempt."""
+
+    challenge_id: str
+    work_dir: Path
+    executor: Executor
+    conn: ConnInfo | None = None       # the only network endpoint tools may reach
+    default_timeout: float = 30.0
+    # Live service sessions, keyed by name, persisted across tool calls so an
+    # interactive agent can send/recv over one connection.
+    sessions: dict = field(default_factory=dict)
+
+
+class Tool(abc.ABC):
+    name: str = ""
+    description: str = ""
+
+    @abc.abstractmethod
+    def input_schema(self) -> dict: ...
+
+    @abc.abstractmethod
+    def run(self, args: dict, ctx: ToolContext) -> ToolResult: ...
+
+    def schema(self) -> dict:
+        return {"name": self.name, "description": self.description,
+                "input_schema": self.input_schema()}
+
+
+# --------------------------------------------------------------------------- #
+# Concrete tools                                                              #
+# --------------------------------------------------------------------------- #
+
+class ShellTool(Tool):
+    """Run a shell command in the challenge work dir. The workhorse for static
+    challenges (rev/crypto/forensics): file, strings, binwalk, python, ghidra
+    headless, volatility, etc. — whatever the base image provides."""
+
+    name = "shell"
+    description = ("Run a bash command in the challenge working directory and "
+                   "return combined stdout+stderr. Use for file inspection, "
+                   "scripts, and analysis tools. No network except the target.")
+
+    def input_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "cmd": {"type": "string", "description": "bash command to execute"},
+                "timeout": {"type": "number", "description": "seconds (optional)"},
+            },
+            "required": ["cmd"],
+        }
+
+    def run(self, args: dict, ctx: ToolContext) -> ToolResult:
+        cmd = str(args.get("cmd", "")).strip()
+        if not cmd:
+            return ToolResult(self.name, b"", "shell:empty", error="empty command")
+        timeout = float(args.get("timeout") or ctx.default_timeout)
+        out, code = ctx.executor.run(cmd, ctx.work_dir, timeout)
+        truncated = len(out) > MAX_TOOL_OUTPUT
+        label = f"shell:{cmd[:60]}"
+        return ToolResult(self.name, out, label, exit_code=code, truncated=truncated)
+
+
+class ServiceConnectTool(Tool):
+    """Open (or reuse) a TCP connection to the challenge's bound target.
+
+    Interactive/pwn work needs a real send/recv loop, not one-shot bash. The
+    connection is stored in ctx.sessions so send/recv tools share it. The host
+    and port come from ConnInfo only — any other address is refused."""
+
+    name = "connect"
+    description = ("Open a TCP connection to the challenge service (the platform-"
+                   "provided target). Reuses an existing connection if open.")
+
+    def input_schema(self) -> dict:
+        return {"type": "object", "properties": {
+            "timeout": {"type": "number", "description": "connect timeout seconds"}}}
+
+    def run(self, args: dict, ctx: ToolContext) -> ToolResult:
+        if not ctx.conn or not ctx.conn.host or not ctx.conn.port:
+            return ToolResult(self.name, b"", "connect:none",
+                              error="no target host/port for this challenge")
+        sess = ctx.sessions.get("svc")
+        if sess is not None and not getattr(sess, "_closed", True):
+            return ToolResult(self.name, b"", "connect:reuse",
+                              meta={"host": ctx.conn.host, "port": ctx.conn.port})
+        timeout = float(args.get("timeout") or ctx.default_timeout)
+        try:
+            sock = socket.create_connection((ctx.conn.host, ctx.conn.port), timeout=timeout)
+        except OSError as e:
+            return ToolResult(self.name, b"", "connect:fail", error=str(e))
+        ctx.sessions["svc"] = _SocketSession(sock)
+        return ToolResult(self.name, b"", "connect:ok",
+                          meta={"host": ctx.conn.host, "port": ctx.conn.port})
+
+
+class ServiceSendTool(Tool):
+    name = "send"
+    description = "Send bytes to the connected service, then read the reply."
+
+    def input_schema(self) -> dict:
+        return {"type": "object", "properties": {
+            "data": {"type": "string", "description": "payload; \\n, \\x41 escapes honoured"},
+            "newline": {"type": "boolean", "description": "append newline (default true)"},
+            "recv_timeout": {"type": "number"},
+        }, "required": ["data"]}
+
+    def run(self, args: dict, ctx: ToolContext) -> ToolResult:
+        sess = ctx.sessions.get("svc")
+        if sess is None or getattr(sess, "_closed", True):
+            return ToolResult(self.name, b"", "send:noconn",
+                              error="not connected; call connect first")
+        payload = _unescape(str(args.get("data", "")))
+        if args.get("newline", True):
+            payload += b"\n"
+        timeout = float(args.get("recv_timeout") or 5.0)
+        try:
+            sess.send(payload)
+            reply = sess.recv(timeout=timeout)
+        except OSError as e:
+            return ToolResult(self.name, b"", "send:fail", error=str(e))
+        return ToolResult(self.name, reply, "svc:recv")
+
+
+class ServiceRecvTool(Tool):
+    name = "recv"
+    description = "Read any pending bytes from the connected service."
+
+    def input_schema(self) -> dict:
+        return {"type": "object", "properties": {"recv_timeout": {"type": "number"}}}
+
+    def run(self, args: dict, ctx: ToolContext) -> ToolResult:
+        sess = ctx.sessions.get("svc")
+        if sess is None or getattr(sess, "_closed", True):
+            return ToolResult(self.name, b"", "recv:noconn", error="not connected")
+        timeout = float(args.get("recv_timeout") or 5.0)
+        try:
+            data = sess.recv(timeout=timeout)
+        except OSError as e:
+            return ToolResult(self.name, b"", "recv:fail", error=str(e))
+        return ToolResult(self.name, data, "svc:recv")
+
+
+class HttpTool(Tool):
+    """Minimal HTTP client bound to the challenge's web target.
+
+    Refuses any URL whose origin differs from the ConnInfo.url the platform
+    provided — a specialist cannot browse the internet, only the target app."""
+
+    name = "http"
+    description = ("Make an HTTP request to the challenge web target. Path is "
+                   "joined onto the provided base URL; other hosts are refused.")
+
+    def input_schema(self) -> dict:
+        return {"type": "object", "properties": {
+            "method": {"type": "string", "enum": ["GET", "POST", "PUT", "HEAD", "OPTIONS"]},
+            "path": {"type": "string", "description": "path+query, joined onto the target base URL"},
+            "headers": {"type": "object"},
+            "body": {"type": "string"},
+        }, "required": ["path"]}
+
+    def run(self, args: dict, ctx: ToolContext) -> ToolResult:
+        if not ctx.conn or not ctx.conn.url:
+            return ToolResult(self.name, b"", "http:none", error="no web target for this challenge")
+        try:
+            import requests
+            from urllib.parse import urljoin, urlparse
+        except ImportError:
+            return ToolResult(self.name, b"", "http:deps", error="requests not installed")
+        base = ctx.conn.url
+        url = urljoin(base, str(args.get("path", "")))
+        if urlparse(url).netloc != urlparse(base).netloc:
+            return ToolResult(self.name, b"", "http:scope",
+                              error=f"refused: {url} is outside target {base}")
+        method = str(args.get("method", "GET")).upper()
+        try:
+            resp = requests.request(method, url, headers=args.get("headers") or {},
+                                    data=args.get("body"), timeout=ctx.default_timeout,
+                                    allow_redirects=True)
+        except Exception as e:  # noqa: BLE001 - surface any client error to the agent
+            return ToolResult(self.name, b"", "http:fail", error=str(e))
+        head = f"HTTP {resp.status_code}\n".encode() + \
+               "\n".join(f"{k}: {v}" for k, v in resp.headers.items()).encode() + b"\n\n"
+        return ToolResult(self.name, head + resp.content, f"http:{method} {args.get('path')}",
+                          meta={"status": resp.status_code})
+
+
+class WriteFileTool(Tool):
+    """Write a file into the work dir (e.g. an exploit script the agent authored,
+    then run via shell). Confined to the work dir."""
+
+    name = "write_file"
+    description = "Write a text file into the challenge working directory."
+
+    def input_schema(self) -> dict:
+        return {"type": "object", "properties": {
+            "path": {"type": "string"}, "content": {"type": "string"}},
+            "required": ["path", "content"]}
+
+    def run(self, args: dict, ctx: ToolContext) -> ToolResult:
+        rel = Path(str(args.get("path", ""))).as_posix().lstrip("/")
+        dest = (ctx.work_dir / rel).resolve()
+        try:
+            dest.relative_to(ctx.work_dir.resolve())
+        except ValueError:
+            return ToolResult(self.name, b"", "write:scope", error="path escapes work dir")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(str(args.get("content", "")), encoding="utf-8")
+        return ToolResult(self.name, f"wrote {rel} ({dest.stat().st_size} bytes)".encode(),
+                          f"write:{rel}")
+
+
+# --------------------------------------------------------------------------- #
+# Socket session helper                                                       #
+# --------------------------------------------------------------------------- #
+
+class _SocketSession:
+    def __init__(self, sock: socket.socket):
+        self._sock = sock
+        self._closed = False
+
+    def send(self, data: bytes) -> None:
+        self._sock.sendall(data)
+
+    def recv(self, timeout: float = 5.0, bufsize: int = 65536) -> bytes:
+        self._sock.settimeout(timeout)
+        chunks: list[bytes] = []
+        try:
+            while True:
+                part = self._sock.recv(bufsize)
+                if not part:
+                    self._closed = True
+                    break
+                chunks.append(part)
+                if len(part) < bufsize:
+                    break
+        except socket.timeout:
+            pass
+        return b"".join(chunks)
+
+    def close(self) -> None:
+        self._closed = True
+        try:
+            self._sock.close()
+        except OSError:
+            pass
+
+
+def _unescape(s: str) -> bytes:
+    """Decode \\n \\t \\xNN style escapes into raw bytes for service payloads."""
+    try:
+        return s.encode("utf-8").decode("unicode_escape").encode("latin-1")
+    except (UnicodeDecodeError, UnicodeEncodeError):
+        return s.encode("utf-8", "surrogatepass")
+
+
+# --------------------------------------------------------------------------- #
+# Tool profiles                                                               #
+# --------------------------------------------------------------------------- #
+
+@dataclass
+class ToolProfile:
+    """A named set of tools handed to a specialist."""
+
+    name: str
+    tools: list[Tool]
+
+    def schemas(self) -> list[dict]:
+        return [t.schema() for t in self.tools]
+
+    def by_name(self) -> dict[str, Tool]:
+        return {t.name: t for t in self.tools}
+
+
+def static_profile() -> ToolProfile:
+    """Type A — static files: rev, crypto, forensics, stego, misc."""
+    return ToolProfile("static", [ShellTool(), WriteFileTool()])
+
+
+def interactive_profile() -> ToolProfile:
+    """Type B — a live service: pwn, interactive crypto/misc. Real send/recv plus
+    shell (to run pwntools/gdb-driven exploit scripts the agent writes)."""
+    return ToolProfile("interactive", [
+        ShellTool(), WriteFileTool(),
+        ServiceConnectTool(), ServiceSendTool(), ServiceRecvTool(),
+    ])
+
+
+def web_profile() -> ToolProfile:
+    """Type C — an HTTP target."""
+    return ToolProfile("web", [ShellTool(), WriteFileTool(), HttpTool()])

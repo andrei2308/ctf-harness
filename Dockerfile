@@ -136,6 +136,10 @@ RUN if [ "$WITH_WORDLISTS" = "1" ]; then apt-get update && \
 WORKDIR /opt/ctf-harness
 COPY . /opt/ctf-harness
 RUN pip install -e .
+# Offline knowledge base the `knowledge` tool greps (the web-search substitute).
+# `knowledge/` is copied in above; drop your ctf-notes there before building
+# (cp -r ../ctf-notes/* knowledge/) for the biggest gain.
+ENV CTF_KNOWLEDGE_DIR=/opt/ctf-harness/knowledge
 # Convenience: `ctf-tools` prints what the probe sees (sanity-check the build).
 RUN printf '#!/usr/bin/env bash\npython -c "from harness.agents.exttools import probe_tools; from harness.agents.tools import LocalExecutor; from pathlib import Path; print(sorted(probe_tools(LocalExecutor(), Path(\"/tmp\"))))"\n' \
       > /usr/local/bin/ctf-tools && chmod +x /usr/local/bin/ctf-tools

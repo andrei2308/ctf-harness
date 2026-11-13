@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import abc
 import os
+import re
 import socket
 import subprocess
 from dataclasses import dataclass, field
@@ -32,6 +33,41 @@ from ..platforms.base import ConnInfo
 MAX_TOOL_OUTPUT = 64 * 1024  # bytes fed back to the model per call (evidence store keeps more)
 
 
+# Lines worth keeping when summarising long output: flags, secrets, errors,
+# addresses, and long base64/hex blobs. Pure heuristic — no LLM call, so it costs
+# no tokens (the scored budget), unlike EnIGMA's LM summariser.
+_INTEREST_RE = re.compile(
+    r"(flag|CTF\{|key|pass(word)?|secret|token|cookie|error|traceback|exception|"
+    r"denied|0x[0-9a-fA-F]{5,}|[A-Za-z0-9+/]{24,}={0,2}|[0-9a-fA-F]{32,})", re.I)
+
+
+def summarize_output(data: bytes, limit: int) -> str:
+    """Model-facing view of tool output. Small output passes through; large output
+    becomes head + lines-of-interest + tail, so signal survives without spending
+    the token budget on a wall of bytes. The FULL bytes still go to the evidence
+    store, so grounding never loses a flag this trims."""
+    text = data.decode("utf-8", "replace")
+    if len(data) <= limit:
+        return text
+    head = text[: limit // 2]
+    tail = text[-(limit // 4):]
+    seen: set[str] = set()
+    interesting: list[str] = []
+    for ln in text.splitlines():
+        s = ln.strip()
+        if s and s not in seen and _INTEREST_RE.search(s):
+            seen.add(s)
+            interesting.append(ln[:400])
+            if len(interesting) >= 50:
+                break
+    mid = ("\n".join(interesting)
+           if interesting else "(no lines matched the interest filter)")
+    return (f"{head}\n"
+            f"…[{len(data)} bytes total; middle elided — lines of interest:]\n"
+            f"{mid}\n"
+            f"…[tail {limit // 4} bytes:]\n{tail}")
+
+
 @dataclass
 class ToolResult:
     name: str
@@ -40,13 +76,14 @@ class ToolResult:
     exit_code: int | None = None
     truncated: bool = False
     error: str = ""               # set when the tool itself failed (not grounds for a flag)
+    # False for reference material (knowledge base, summaries) that must NEVER be
+    # treated as flag evidence — otherwise an example CTF{...} in a writeup could
+    # confabulate a flag.
+    is_evidence: bool = True
     meta: dict = field(default_factory=dict)
 
     def as_text(self, limit: int = MAX_TOOL_OUTPUT) -> str:
-        body = self.output[:limit]
-        text = body.decode("utf-8", "replace")
-        if self.truncated or len(self.output) > limit:
-            text += f"\n…[truncated; {len(self.output)} bytes total]"
+        text = summarize_output(self.output, limit)
         if self.error:
             text = f"[tool error: {self.error}]\n" + text
         return text

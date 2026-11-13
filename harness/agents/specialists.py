@@ -19,6 +19,7 @@ from pathlib import Path
 
 from ..platforms.base import Challenge, ChallengeKind, ConnInfo
 from .exttools import GdbTool, GhidraDecompileTool, VolatilityTool
+from .knowledge import KnowledgeSearchTool
 from .tools import (HttpTool, ServiceConnectTool, ServiceRecvTool,
                     ServiceSendTool, ShellTool, ToolProfile, WriteFileTool)
 
@@ -69,8 +70,8 @@ class Specialist(abc.ABC):
 
 
 # Shared tool sets -----------------------------------------------------------
-def _base():            # every specialist can run a shell and write scripts
-    return [ShellTool(), WriteFileTool()]
+def _base():            # shell, script-writing, and the offline knowledge base
+    return [ShellTool(), WriteFileTool(), KnowledgeSearchTool()]
 
 
 class RevSpecialist(Specialist):

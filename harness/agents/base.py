@@ -15,6 +15,7 @@ SolverState with a higher rung's model.
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -74,7 +75,8 @@ class Solver:
 
     def __init__(self, *, model: Model, profile: ToolProfile, state: SolverState,
                  budget: Budget, log: RunLog, submitter: FlagSubmitter,
-                 max_iterations: int = 40):
+                 max_iterations: int = 40, stuck_patience: int = 6,
+                 stuck_dup_threshold: int = 3):
         self.model = model
         self.profile = profile
         self.state = state
@@ -83,6 +85,16 @@ class Solver:
         self.submitter = submitter
         self.max_iterations = max_iterations
         self._tools = profile.by_name()
+        # Stuck-loop detection: end an attempt early (so the ladder escalates)
+        # when it stops making progress or repeats an action, instead of burning
+        # the capped token budget spinning.
+        self.stuck_patience = stuck_patience              # turns w/o new evidence
+        self.stuck_dup_threshold = stuck_dup_threshold    # consecutive repeated calls
+        self._recent_sigs: deque[str] = deque(maxlen=6)
+        self._dup_hits = 0
+        self._no_progress = 0
+        self._last_evidence_bytes = state.store.total_bytes
+        self._stuck_nudged = False
 
     def _submit_grounded(self, newly: list) -> list:
         """Submit each newly grounded flag immediately. Returns the results so the
@@ -98,6 +110,12 @@ class Solver:
         return f"{acc} of {req} flag(s) accepted for this challenge."
 
     def _handle_tool_call(self, tc) -> Message:
+        # Track repeated actions for stuck detection: a repeated (tool, args)
+        # bumps the dup counter; variety resets it.
+        sig = f"{tc.name}:{sorted((tc.arguments or {}).items())!r}"[:240]
+        self._dup_hits = self._dup_hits + 1 if sig in self._recent_sigs else 0
+        self._recent_sigs.append(sig)
+
         tool = self._tools.get(tc.name)
         if tool is None:
             res = ToolResult(tc.name, b"", f"{tc.name}:unknown",
@@ -109,7 +127,10 @@ class Solver:
                 res = ToolResult(tc.name, b"", f"{tc.name}:exception", error=repr(e))
 
         # Record REAL output as evidence and stream any grounded flag now.
-        newly = self.state.store.record(res.source, res.output) if res.output else []
+        # Reference material (knowledge base, summaries) is NOT evidence: an
+        # example CTF{...} in a writeup must never ground.
+        newly = (self.state.store.record(res.source, res.output)
+                 if res.output and res.is_evidence else [])
         self.log.observe(self.state.challenge_id, res.name, len(res.output), res.truncated)
         if newly:
             self._submit_grounded(newly)
@@ -145,6 +166,34 @@ class Solver:
                 self.log.attempt_end(cid, Outcome.PARKED.value, "attempt slice spent")
                 return SolveOutcome(Outcome.PARKED, cid, "attempt slice spent",
                                     grounded_any, self.state.iters_done)
+
+            # Stuck-loop detection: assess after real turns. Nudge once, then bail
+            # to STALLED so the scheduler escalates a rung instead of spinning.
+            if self.state.iters_done > 0:
+                cur = self.state.store.total_bytes
+                self._no_progress = 0 if cur > self._last_evidence_bytes else self._no_progress + 1
+                self._last_evidence_bytes = cur
+                if (self._no_progress >= self.stuck_patience
+                        or self._dup_hits >= self.stuck_dup_threshold):
+                    if not self._stuck_nudged:
+                        self._stuck_nudged = True
+                        self._no_progress = 0
+                        self._dup_hits = 0
+                        self._recent_sigs.clear()
+                        self.log.event("solver.stuck_nudge", challenge=cid)
+                        self.state.messages.append(Message(role="user", content=(
+                            "You appear stuck — no new information for several steps, "
+                            "or you are repeating an action that is not working. Change "
+                            "approach now: use a different tool or input, re-read the "
+                            "actual file/service output, or call `knowledge` for the "
+                            "standard technique for this challenge type. Do not repeat a "
+                            "command that already failed.")))
+                    else:
+                        self.state.note("stuck-loop: no progress after nudge")
+                        self.log.attempt_end(cid, Outcome.STALLED.value, "stuck-loop")
+                        return SolveOutcome(Outcome.STALLED, cid,
+                                            "stuck-loop (no new progress)",
+                                            grounded_any, self.state.iters_done)
 
             self.state.iters_done += 1
             try:

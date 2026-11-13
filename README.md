@@ -191,6 +191,24 @@ lacks only skips that one package (logged `WARN`) instead of failing the build.
 SageMath and SecLists are most of the image size — toggle them off with the build
 args if the submission size limit (OPEN) bites.
 
+## Research-informed additions
+
+Drawn from the current CTF-agent literature (EnIGMA, CRAKEN/CTFusion, Plain
+Agents, D-CIPHER, harness-engineering surveys):
+
+- **Offline knowledge base + `knowledge` tool** (`knowledge/`, `agents/knowledge.py`)
+  — web access roughly doubles CTF solve rate and is forbidden here, so every
+  specialist can grep a baked-in knowledge base (your `ctf-notes` + cheatsheets)
+  for the known technique. Its output is **non-evidence**: an example `CTF{...}`
+  in a writeup can never ground as a real flag.
+- **Output summarizer** (`agents/tools.py: summarize_output`) — large tool output
+  is shown to the model as head + lines-of-interest + tail (heuristic, no LLM
+  call), so signal survives without spending the scored token budget. The full
+  bytes still go to the evidence store, so grounding never loses a flag.
+- **Stuck-loop detection** (`agents/base.py`) — an attempt that repeats an action
+  or stops producing new evidence is nudged once, then bailed to STALLED so the
+  ladder escalates a rung instead of spinning on the token budget.
+
 ## Multi-flag / staged submission
 
 Informed by the predecessor agent (CyberEDU's own "Overmind", which won the

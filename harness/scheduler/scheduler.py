@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Callable
 
 from ..agents.base import Outcome, Solver, SolverState, new_state
+from ..agents.exttools import probe_tools
 from ..agents.specialists import Specialist, route
 from ..agents.tools import Executor, ToolContext
 from ..flags.submit import FlagSubmitter
@@ -88,6 +89,7 @@ class Scheduler:
         self._lock = threading.Condition()
         self._stop = False          # set when global budget is exhausted
         self._running = 0
+        self._available: set[str] | None = None  # installed tools, probed once
 
     # --- public API --------------------------------------------------------
 
@@ -247,6 +249,13 @@ class Scheduler:
         self.submitter.register(c.id, c.flags_required)
         work_dir = self.work_root / _safe(c.id)
         work_dir.mkdir(parents=True, exist_ok=True)
+        if self._available is None:
+            try:
+                self._available = probe_tools(self.executor, self.work_root)
+                self.log.event("tools.probed", available=sorted(self._available))
+            except Exception as e:  # noqa: BLE001 - probing must never break a run
+                self._available = set()
+                self.log.event("tools.probe_error", error=repr(e))
         files: list[Path] = []
         conn = None
         try:
@@ -265,7 +274,8 @@ class Scheduler:
                           executor=self.executor, conn=conn)
         state = new_state(c.id, work_dir, ctx,
                           system_prompt=specialist.system_prompt(),
-                          task_prompt=specialist.task_prompt(c, work_dir, conn, files))
+                          task_prompt=specialist.task_prompt(c, work_dir, conn, files,
+                                                             available=self._available))
         self.log.event("scheduler.prepared", challenge=c.id,
                        specialist=specialist.kind.value, files=len(files),
                        has_target=conn is not None)

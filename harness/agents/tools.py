@@ -21,6 +21,7 @@ tool code.
 from __future__ import annotations
 
 import abc
+import os
 import socket
 import subprocess
 from dataclasses import dataclass, field
@@ -81,9 +82,22 @@ class LocalExecutor(Executor):
             proc = subprocess.run(
                 ["bash", "-lc", cmd],
                 cwd=str(cwd),
-                env={"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(cwd), **self._env},
+                env={
+                    # Inherit the image's PATH so baked-in tools (a venv with
+                    # pwntools, Ghidra's analyzeHeadless, radare2) are reachable,
+                    # but do NOT inherit the rest of the environment — the model
+                    # endpoint credentials must never enter the agent's shell.
+                    "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+                    "HOME": str(cwd),
+                    # Keep tools non-interactive: no pagers, no prompts, dumb term.
+                    # An autonomous agent must never block a slot waiting for input.
+                    "PAGER": "cat", "GIT_PAGER": "cat", "TERM": "dumb",
+                    "DEBIAN_FRONTEND": "noninteractive",
+                    **self._env,
+                },
                 capture_output=True,
                 timeout=timeout,
+                stdin=subprocess.DEVNULL,
             )
             return proc.stdout + proc.stderr, proc.returncode
         except subprocess.TimeoutExpired as e:

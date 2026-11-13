@@ -8,6 +8,26 @@ behind two swappable interfaces so the organizer unknowns never block the build.
 This is the **skeleton** from step 1 of the build handoff. It runs today, fully
 offline, and you drop real values in as organizer answers land.
 
+## Competition setup (confirmed by the AISafe organizers)
+
+- **Submission = a Docker image we build** and upload to the platform; we put
+  whatever tools we want in it. The organizers run it on their infra. → see
+  `Dockerfile` (the image *is* the submission).
+- **One container run per challenge**, challenge auto-started. So the production
+  path is single-challenge: a run reads its one assigned challenge and solves it.
+  The multi-challenge `Scheduler` here is therefore the **local benchmark/dev
+  harness**; the shipped run loop is the single-challenge `Solver`
+  (`agents/base.py`). *(Single-challenge entrypoint lands with the starter kit.)*
+- **One shared model for everyone, via the organizers' endpoint**, announced with
+  its limits at the event. → single-model, effort-based ladder; point the
+  OpenAI-compatible adapter at their endpoint via env.
+- **A wrong flag costs nothing.** → `penalize_wrong=False`; submit aggressively.
+- **Starter kit + docs arrive on the platform at event start** — that defines the
+  exact challenge-read / flag-submit interface, which slots behind `Platform`.
+
+Still pending: the model id + exact token/time limits, and the starter-kit
+platform interface. Everything else is wired and swappable.
+
 ## Why it's shaped this way (the rules drive the design)
 
 | Rule | Design consequence |
@@ -102,6 +122,26 @@ Defaults in `config.py`. These map 1:1 to the Tier-1 questions in the handoff:
 - **Packaging/sandbox** (Q5/Q6): `LocalExecutor` is dev-only; swap for a
   container executor (read-only rootfs, `/input` ro + `/work` + `/artifacts`,
   digest-pinned, no runtime installs) without touching tool code.
+
+## Analysis tools & the submission image
+
+Specialists get real tooling, not just a shell: `gdb` (batch, pwndbg-loaded via a
+trusted init while `--nx` ignores any planted `./.gdbinit`), `ghidra_decompile`
+(Ghidra headless → C), and `volatility` (memory forensics), plus `shell` /
+`write_file` / the web + service tools. The wrappers force **non-interactive**
+mode (an autonomous slot must never block on a prompt) and **degrade honestly** —
+a tool the sandbox lacks returns "not installed", never a fabricated result.
+
+Because the agent can only *run* a tool that exists at run time (no internet to
+install one), presence is guaranteed by baking tools into the `Dockerfile`
+submission image. At each run's start, `probe_tools()` checks what's actually
+installed and the specialist prompt is told, so the agent only reaches for what's
+there. Build + smoke-test the image:
+
+```bash
+docker build -t ctf-harness:latest .          # on a machine with internet
+docker run --rm ctf-harness:latest python -m pytest -q
+```
 
 ## Multi-flag / staged submission
 

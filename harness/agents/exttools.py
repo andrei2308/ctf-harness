@@ -19,6 +19,7 @@ a flag found via decompilation or a memory dump grounds exactly like any other.
 
 from __future__ import annotations
 
+import os
 import shlex
 from pathlib import Path
 
@@ -85,11 +86,17 @@ class GdbTool(Tool):
         cmds = args.get("commands") or []
         if not binary or not cmds:
             return ToolResult(self.name, b"", "gdb:args", error="binary and commands required")
-        parts = ["gdb", "--batch", "--nx",
-                 "-ex", "set pagination off", "-ex", "set confirm off"]
+        # --nx ignores ALL init files, including a malicious .gdbinit planted in
+        # the untrusted challenge dir. When the image ships a trusted pwndbg/GEF
+        # init, CTF_GDB_INIT points at it and we load only that, explicitly.
+        parts = ["gdb", "--batch", "--nx"]
+        init = os.environ.get("CTF_GDB_INIT")
+        if init and Path(init).is_file():
+            parts += ["-ix", init]
+        parts += ["-ex", "set pagination off", "-ex", "set confirm off"]
         for c in cmds:
             parts += ["-ex", str(c)]
-        parts.append("--args" if False else binary)
+        parts.append(binary)
         cmd = " ".join(shlex.quote(p) for p in parts)
         timeout = float(args.get("timeout") or ctx.default_timeout)
         out, code = ctx.executor.run(cmd, ctx.work_dir, timeout)

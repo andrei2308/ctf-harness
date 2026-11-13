@@ -155,12 +155,31 @@ Because the agent can only *run* a tool that exists at run time (no internet to
 install one), presence is guaranteed by baking tools into the `Dockerfile`
 submission image. At each run's start, `probe_tools()` checks what's actually
 installed and the specialist prompt is told, so the agent only reaches for what's
-there. Build + smoke-test the image:
+there.
+
+The image is **Kali-based** (matches the Kali workflow in `ctf-notes`) and bakes
+the full kit across categories: rev/pwn (gdb+pwndbg, Ghidra, radare2, ropper,
+ROPgadget, one_gadget, seccomp-tools, patchelf, pwninit, checksec, angr, z3,
+unicorn, capstone), crypto (**SageMath**, sympy/numpy/gmpy2, fpylll+cysignals,
+RsaCtfTool, xortool, roca-detect, pycryptodome), forensics/stego (volatility3,
+zsteg, stegseek, steghide, binwalk, foremost, exiftool, tshark, sox), cracking
+(john, hashcat, hashid, hydra, fcrackzip/pdfcrack, hcxtools + rockyou/SecLists),
+web (sqlmap, gobuster, ffuf, nmap, flask-unsign, jwt_tool), and mobile
+(jadx, apktool, dex2jar). Two run-time caveats no install fixes: **no GPU**
+(hashcat is CPU-only/slow — John is the CPU workhorse) and **no internet**
+(factordb / online RSA lookups are dead — factor locally with sage/yafu).
+
+Build + smoke-test the image (on a machine with Docker + internet):
 
 ```bash
-docker build -t ctf-harness:latest .          # on a machine with internet
+docker build -t ctf-harness:latest .                              # full kit
+docker build --build-arg WITH_SAGE=0 --build-arg WITH_WORDLISTS=0 \
+  -t ctf-harness:slim .                                           # trim the heavy layers
 docker run --rm ctf-harness:latest python -m pytest -q
 ```
+
+SageMath and SecLists are most of the image size — toggle them off with the build
+args if the submission size limit (OPEN) bites.
 
 ## Multi-flag / staged submission
 

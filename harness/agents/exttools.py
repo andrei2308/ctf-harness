@@ -28,14 +28,29 @@ from .tools import MAX_TOOL_OUTPUT, Tool, ToolContext, ToolResult
 # The analysis tools we probe for and advertise to specialists. Binaries checked
 # with `command -v`; python modules with an import.
 _PROBE_BINARIES = [
+    # rev / pwn
     "gdb", "objdump", "readelf", "nm", "strings", "file", "xxd", "ltrace", "strace",
-    "binwalk", "radare2", "r2", "foremost", "steghide", "zsteg", "exiftool",
-    "tshark", "tcpdump", "analyzeHeadless", "john", "hashcat", "openssl",
+    "radare2", "r2", "analyzeHeadless", "checksec", "patchelf", "pwninit",
+    "ropper", "ROPgadget", "one_gadget", "seccomp-tools",
+    # forensics / stego
+    "binwalk", "foremost", "steghide", "stegseek", "zsteg", "exiftool",
+    "tshark", "tcpdump", "sox", "vol", "pdftotext",
+    # crypto
+    "sage", "RsaCtfTool", "xortool", "openssl",
+    # cracking
+    "john", "hashcat", "hashid", "hydra", "fcrackzip", "pdfcrack", "hcxpcapngtool",
+    # web
+    "sqlmap", "gobuster", "ffuf", "nmap", "flask-unsign", "jwt_tool",
+    # mobile
+    "apktool", "jadx", "d2j-dex2jar",
+    # wifi
+    "aircrack-ng",
 ]
 _PROBE_PYMODULES = {
     "pwntools": "pwn", "z3": "z3", "angr": "angr", "capstone": "capstone",
     "unicorn": "unicorn", "volatility3": "volatility3", "pycryptodome": "Crypto",
-    "requests": "requests", "scapy": "scapy",
+    "requests": "requests", "scapy": "scapy", "sympy": "sympy", "numpy": "numpy",
+    "gmpy2": "gmpy2", "fpylll": "fpylll",
 }
 
 

@@ -80,6 +80,8 @@ class OpenAIModel(Model):
         }
         if self.spec.temperature is not None:
             kwargs["temperature"] = self.spec.temperature
+        if self.spec.top_p is not None:
+            kwargs["top_p"] = self.spec.top_p
         wrapped = self._to_tools(tools)
         if wrapped:
             kwargs["tools"] = wrapped

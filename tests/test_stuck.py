@@ -42,7 +42,7 @@ def test_repeated_action_leads_to_stall():
         model = ScriptedModel([same] * 20)
         solver = Solver(model=model, profile=ToolProfile("t", [_NoopTool()]),
                         state=state, budget=Budget(Caps()), log=log, submitter=sub,
-                        max_iterations=40, stuck_patience=6, stuck_dup_threshold=3)
+                        max_iterations=40, stuck_patience=6, stuck_dup_threshold=3, plan_first=False)
         out = solver.run()
         log.close()
         assert out.outcome == Outcome.STALLED
@@ -61,6 +61,6 @@ def test_stuck_nudge_logged():
                              usage=Usage(input=5, output=2), stop_reason="tool")
         Solver(model=ScriptedModel([same] * 20), profile=ToolProfile("t", [_NoopTool()]),
                state=state, budget=Budget(Caps()), log=log, submitter=sub,
-               stuck_dup_threshold=3).run()
+               stuck_dup_threshold=3, plan_first=False).run()
         log.close()
         assert '"kind":"solver.stuck_nudge"' in Path(log.path).read_text()

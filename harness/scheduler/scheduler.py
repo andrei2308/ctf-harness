@@ -73,7 +73,8 @@ class Scheduler:
     def __init__(self, *, platform: Platform, ladder: Ladder,
                  model_factory: ModelFactory, budget: Budget, log: RunLog,
                  submitter: FlagSubmitter, executor: Executor, work_root: Path,
-                 concurrency: int = 4, max_error_retries: int = 1):
+                 concurrency: int = 4, max_error_retries: int = 1,
+                 plan_first: bool = True):
         self.platform = platform
         self.ladder = ladder
         self.model_factory = model_factory
@@ -84,6 +85,7 @@ class Scheduler:
         self.work_root = Path(work_root)
         self.concurrency = max(1, concurrency)
         self.max_error_retries = max_error_retries
+        self.plan_first = plan_first
 
         self._records: dict[str, ChallengeRecord] = {}
         self._lock = threading.Condition()
@@ -203,7 +205,8 @@ class Scheduler:
         model = self.model_factory(rung.spec)
         solver = Solver(model=model, profile=rec.specialist.profile(),
                         state=rec.state, budget=self.budget, log=self.log,
-                        submitter=self.submitter, max_iterations=rung.max_iterations)
+                        submitter=self.submitter, max_iterations=rung.max_iterations,
+                        plan_first=self.plan_first)
         try:
             result = solver.run()
         finally:

@@ -45,7 +45,7 @@ def _mk(model, profile):
     ctx = ToolContext(challenge_id="c1", work_dir=Path(d), executor=LocalExecutor())
     state = new_state("c1", Path(d), ctx, system_prompt="sys", task_prompt="go")
     solver = Solver(model=model, profile=profile, state=state,
-                    budget=Budget(Caps()), log=log, submitter=sub, max_iterations=10)
+                    budget=Budget(Caps()), log=log, submitter=sub, max_iterations=10, plan_first=False)
     return solver, plat, sub, log
 
 

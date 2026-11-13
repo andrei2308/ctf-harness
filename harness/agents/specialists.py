@@ -18,7 +18,8 @@ import abc
 from pathlib import Path
 
 from ..platforms.base import Challenge, ChallengeKind, ConnInfo
-from .exttools import GdbTool, GhidraDecompileTool, VolatilityTool
+from .exttools import (GdbTool, GhidraDecompileTool, InteractiveGdbTool,
+                       VolatilityTool)
 from .knowledge import KnowledgeSearchTool
 from .tools import (HttpTool, ServiceConnectTool, ServiceRecvTool,
                     ServiceSendTool, ShellTool, ToolProfile, WriteFileTool)
@@ -78,7 +79,8 @@ class RevSpecialist(Specialist):
     kind = ChallengeKind.STATIC
 
     def profile(self) -> ToolProfile:
-        return ToolProfile("rev", _base() + [GdbTool(), GhidraDecompileTool()])
+        return ToolProfile("rev", _base() + [
+            GdbTool(), InteractiveGdbTool(), GhidraDecompileTool()])
 
     def system_prompt(self) -> str:
         return (
@@ -89,8 +91,10 @@ class RevSpecialist(Specialist):
             "- Decompile the key function with `ghidra_decompile` (prefer one "
             "function over dumping everything); cross-check in `radare2` (aaa; pdf).\n"
             "- Dynamic: `gdb` in batch (break at the check, inspect state), "
-            "`ltrace`/`strace` for calls/syscalls. Emulate opaque byte streams "
-            "with `unicorn`; solve constraint/keygen checks with `angr` or `z3`.\n"
+            "`ltrace`/`strace` for calls/syscalls; use `gdb_session` for a "
+            "stateful debug (break, run, step, inspect across calls). Emulate "
+            "opaque byte streams with `unicorn`; solve constraint/keygen checks "
+            "with `angr` or `z3`.\n"
             "- .pyc? `uncompyle6`/`decompyle3`. Unknown blobs: `binwalk`, `floss`.\n"
             f"{_FLAG_CONTRACT}\n{_EFFICIENCY}"
         )
@@ -101,7 +105,8 @@ class PwnSpecialist(Specialist):
 
     def profile(self) -> ToolProfile:
         return ToolProfile("pwn", _base() + [
-            ServiceConnectTool(), ServiceSendTool(), ServiceRecvTool(), GdbTool()])
+            ServiceConnectTool(), ServiceSendTool(), ServiceRecvTool(),
+            GdbTool(), InteractiveGdbTool()])
 
     def system_prompt(self) -> str:
         return (
@@ -111,7 +116,8 @@ class PwnSpecialist(Specialist):
             "run `pwninit`/`patchelf`; find gadgets with `ROPgadget`/`ropper` and "
             "`one_gadget`; parse filters with `seccomp-tools`.\n"
             "- Write the exploit as a `pwntools` script (process locally first, "
-            "then switch to remote). Debug with `gdb`+pwndbg in batch.\n"
+            "then switch to remote). Debug with `gdb`+pwndbg (one-shot) or "
+            "`gdb_session` for stateful break/run/step/inspect.\n"
             "- Drive the live service with `connect`/`send`/`recv`; confirm each "
             "primitive (leak → libc base → control) before chaining.\n"
             f"{_FLAG_CONTRACT}\n{_EFFICIENCY}"

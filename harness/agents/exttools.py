@@ -20,7 +20,10 @@ a flag found via decompilation or a memory dump grounds exactly like any other.
 from __future__ import annotations
 
 import os
+import select
 import shlex
+import subprocess
+import time
 from pathlib import Path
 
 from .tools import MAX_TOOL_OUTPUT, Tool, ToolContext, ToolResult
@@ -239,3 +242,153 @@ class VolatilityTool(Tool):
                               error="Volatility 3 not installed in this sandbox")
         return ToolResult(self.name, out, f"vol:{plugin}", exit_code=code,
                           truncated=len(out) > MAX_TOOL_OUTPUT)
+
+
+# --------------------------------------------------------------------------- #
+# Persistent interactive gdb session (EnIGMA-style Interactive Agent Tool)     #
+# --------------------------------------------------------------------------- #
+
+class _GdbSession:
+    """A long-lived gdb process driven over pipes. Each command is followed by an
+    `echo <sentinel>` so we can read exactly up to the end of that command's
+    output, regardless of gdb's prompt behaviour on a non-tty."""
+
+    _SENT = "__CTFGDB_%d__"
+
+    def __init__(self, proc: subprocess.Popen):
+        self._p = proc
+        self._closed = False
+        self._n = 0
+
+    def _read_until(self, marker: bytes, timeout: float) -> bytes:
+        fd = self._p.stdout.fileno()
+        buf = b""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self._p.poll() is not None:
+                try:
+                    buf += self._p.stdout.read() or b""
+                except (OSError, ValueError):
+                    pass
+                self._closed = True
+                break
+            r, _, _ = select.select([fd], [], [], 0.2)
+            if r:
+                try:
+                    chunk = os.read(fd, 65536)
+                except OSError:
+                    break
+                if not chunk:
+                    self._closed = True
+                    break
+                buf += chunk
+                if marker in buf:
+                    break
+        return buf
+
+    def send(self, cmd: str, timeout: float = 30.0) -> bytes:
+        if self._closed or self._p.poll() is not None:
+            self._closed = True
+            raise OSError("gdb session is closed")
+        self._n += 1
+        marker = self._SENT % self._n
+        self._p.stdin.write((cmd + f"\necho {marker}\\n\n").encode())
+        self._p.stdin.flush()
+        out = self._read_until(marker.encode(), timeout)
+        idx = out.find(marker.encode())
+        return out[:idx] if idx != -1 else out
+
+    def close(self) -> None:
+        self._closed = True
+        try:
+            self._p.stdin.write(b"quit\n")
+            self._p.stdin.flush()
+        except (OSError, ValueError):
+            pass
+        try:
+            self._p.terminate()
+            self._p.wait(timeout=3)
+        except Exception:  # noqa: BLE001
+            try:
+                self._p.kill()
+            except OSError:
+                pass
+
+
+class InteractiveGdbTool(Tool):
+    """Stateful gdb: start once on a binary, then issue commands across calls
+    (breakpoints, run, stepi, x/, info registers, heap inspection) with state
+    preserved — unlike the one-shot `gdb` tool. Non-interactive from the agent's
+    side: each call returns that command's output."""
+
+    name = "gdb_session"
+    description = ("Persistent interactive gdb session. action=start (give "
+                   "`binary`) opens it; action=cmd (give `cmd`) runs one gdb "
+                   "command with state kept between calls; action=stop closes it. "
+                   "Use for stateful debugging (break, run, step, inspect).")
+
+    def input_schema(self) -> dict:
+        return {"type": "object", "properties": {
+            "action": {"type": "string", "enum": ["start", "cmd", "stop"]},
+            "binary": {"type": "string", "description": "binary to debug (action=start)"},
+            "cmd": {"type": "string", "description": "a gdb command (action=cmd)"},
+            "timeout": {"type": "number"},
+        }, "required": ["action"]}
+
+    def run(self, args: dict, ctx: ToolContext) -> ToolResult:
+        action = str(args.get("action", "")).strip()
+        sess = ctx.sessions.get("gdb")
+
+        if action == "start":
+            binary = str(args.get("binary", "")).strip()
+            if not binary:
+                return ToolResult(self.name, b"", "gdb_session:args",
+                                  error="binary required to start")
+            if sess is not None and not getattr(sess, "_closed", True):
+                sess.close()
+            parts = ["gdb", "--nx", "-q"]
+            init = os.environ.get("CTF_GDB_INIT")
+            if init and Path(init).is_file():
+                parts += ["-ix", init]
+            parts += ["-ex", "set pagination off", "-ex", "set confirm off", binary]
+            try:
+                proc = subprocess.Popen(parts, cwd=str(ctx.work_dir),
+                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                        stderr=subprocess.STDOUT, bufsize=0)
+            except FileNotFoundError:
+                return ToolResult(self.name, b"", "gdb_session:missing",
+                                  error="gdb not installed in this sandbox")
+            except OSError as e:
+                return ToolResult(self.name, b"", "gdb_session:fail", error=str(e))
+            session = _GdbSession(proc)
+            ctx.sessions["gdb"] = session
+            try:
+                banner = session.send("echo (gdb session ready)\\n", timeout=20)
+            except OSError as e:
+                return ToolResult(self.name, b"", "gdb_session:fail",
+                                  error=f"gdb did not start: {e}")
+            return ToolResult(self.name, banner or b"(gdb session started)",
+                              "gdb_session:start")
+
+        if action == "cmd":
+            if sess is None or getattr(sess, "_closed", True):
+                return ToolResult(self.name, b"", "gdb_session:noconn",
+                                  error="no gdb session; action=start first")
+            cmd = str(args.get("cmd", "")).strip()
+            if not cmd:
+                return ToolResult(self.name, b"", "gdb_session:args", error="cmd required")
+            try:
+                out = sess.send(cmd, timeout=float(args.get("timeout") or 30.0))
+            except OSError as e:
+                return ToolResult(self.name, b"", "gdb_session:fail", error=str(e))
+            return ToolResult(self.name, out, f"gdb_session:{cmd[:40]}",
+                              truncated=len(out) > MAX_TOOL_OUTPUT)
+
+        if action == "stop":
+            if sess is not None:
+                sess.close()
+                ctx.sessions.pop("gdb", None)
+            return ToolResult(self.name, b"(gdb session stopped)", "gdb_session:stop")
+
+        return ToolResult(self.name, b"", "gdb_session:badaction",
+                          error="action must be start | cmd | stop")

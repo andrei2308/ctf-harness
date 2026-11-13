@@ -46,10 +46,23 @@ class ChallengeResult:
     reason: str
 
 
+def _recap(state: SolverState) -> str:
+    """A short recap to seed a fresh-context escalation."""
+    parts = ["(Your earlier attempt's context was reset to stay focused.)"]
+    if state.notes:
+        parts.append("What happened: " + "; ".join(state.notes[-5:]))
+    flags = state.store.grounded_flags()
+    if flags:
+        parts.append(f"{len(flags)} flag(s) already found/submitted.")
+    parts.append("Take a different approach this time.")
+    return "\n".join(parts)
+
+
 def run_challenge(*, challenge: Challenge, platform: Platform, ladder: Ladder,
                   model_factory, budget: Budget, log: RunLog,
                   submitter: FlagSubmitter, executor, work_root,
-                  available: set[str] | None = None, max_attempts: int = 50) -> ChallengeResult:
+                  available: set[str] | None = None, max_attempts: int = 50,
+                  plan_first: bool = True, fresh_context: bool = False) -> ChallengeResult:
     """Drive one challenge to completion: prepare, then climb the effort ladder
     until solved, the per-run budget is spent, or ideas run out.
 
@@ -89,10 +102,9 @@ def run_challenge(*, challenge: Challenge, platform: Platform, ladder: Ladder,
 
     specialist = route(challenge, conn)
     ctx = ToolContext(challenge_id=cid, work_dir=work_dir, executor=executor, conn=conn)
-    state = new_state(cid, work_dir, ctx,
-                      system_prompt=specialist.system_prompt(),
-                      task_prompt=specialist.task_prompt(challenge, work_dir, conn, files,
-                                                         available=available))
+    sys_p = specialist.system_prompt()
+    task_p = specialist.task_prompt(challenge, work_dir, conn, files, available=available)
+    state = new_state(cid, work_dir, ctx, system_prompt=sys_p, task_prompt=task_p)
     log.event("challenge.prepared", challenge=cid, specialist=specialist.kind.value,
               files=len(files), has_target=conn is not None,
               flags_required=challenge.flags_required)
@@ -107,7 +119,8 @@ def run_challenge(*, challenge: Challenge, platform: Platform, ladder: Ladder,
         model = model_factory(ladder.rung(rung).spec)
         solver = Solver(model=model, profile=specialist.profile(), state=state,
                         budget=budget, log=log, submitter=submitter,
-                        max_iterations=ladder.rung(rung).max_iterations)
+                        max_iterations=ladder.rung(rung).max_iterations,
+                        plan_first=plan_first)
         try:
             out = solver.run()
             model.close()
@@ -124,8 +137,11 @@ def run_challenge(*, challenge: Challenge, platform: Platform, ladder: Ladder,
             break
         if out.outcome == Outcome.PARKED:
             continue                      # resume same rung
-        # STALLED / ERROR -> escalate effort
+        # STALLED / ERROR -> escalate effort (optionally with a clean context)
         rung += 1
+        if fresh_context and ladder.has_rung(rung):
+            state.restart_conversation(sys_p, task_p, _recap(state))
+            log.event("challenge.fresh_context", challenge=cid, rung=rung)
 
     solved = submitter.is_solved(cid)
     log.event("challenge.done", challenge=cid, solved=solved, attempts=attempts,
@@ -159,7 +175,9 @@ def solve_one(config: Config, challenge_id: str | None = None) -> dict:
         result = run_challenge(
             challenge=challenge, platform=platform, ladder=config.ladder(),
             model_factory=make_model_factory(config), budget=budget, log=log,
-            submitter=submitter, executor=config.executor(), work_root=config.work_root)
+            submitter=submitter, executor=config.executor(), work_root=config.work_root,
+            plan_first=config.plan_first,
+            fresh_context=config.fresh_context_on_escalate)
         summary = {
             "challenge": result.challenge,
             "solved": result.solved,

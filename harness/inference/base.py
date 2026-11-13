@@ -41,6 +41,7 @@ class ModelSpec:
     effort: Effort = Effort.LOW
     max_tokens: int = 4096
     temperature: float | None = None
+    top_p: float | None = None
     # Rough cost weights (per-1k tokens) used only for budget *estimation* and
     # ladder ordering, never billed. Filled from organizer pricing when known.
     cost_in_per_1k: float = 0.0

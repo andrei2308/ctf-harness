@@ -77,6 +77,8 @@ class AnthropicModel(Model):
             kwargs["system"] = system
         if self.spec.temperature is not None:
             kwargs["temperature"] = self.spec.temperature
+        if self.spec.top_p is not None:
+            kwargs["top_p"] = self.spec.top_p
         if tools:
             # Our tool schema already matches the Messages API shape
             # (name/description/input_schema); pass through.

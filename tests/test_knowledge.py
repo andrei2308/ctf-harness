@@ -82,7 +82,7 @@ def test_flag_in_knowledge_output_does_not_ground():
         ])
         solver = Solver(model=model, profile=ToolProfile("t", [_FlagInKnowledgeTool()]),
                         state=state, budget=Budget(Caps()), log=log, submitter=sub,
-                        max_iterations=6)
+                        max_iterations=6, plan_first=False)
         out = solver.run()
         log.close()
         # The flag appeared only in knowledge output (non-evidence) and in model

@@ -40,7 +40,8 @@ def run_benchmark(config: Config) -> dict:
         platform=platform, ladder=config.ladder(),
         model_factory=make_model_factory(config), budget=budget, log=log,
         submitter=submitter, executor=config.executor(),
-        work_root=Path(config.work_root), concurrency=config.concurrency)
+        work_root=Path(config.work_root), concurrency=config.concurrency,
+        plan_first=config.plan_first)
 
     started = time.time()
     try:

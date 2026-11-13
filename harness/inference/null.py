@@ -73,6 +73,11 @@ class RuleModel(Model):
             usage=Usage(input=80, output=15), stop_reason="tool", spec=self.spec)
 
     def complete(self, messages: list[Message], tools: list[dict] | None = None) -> ModelResponse:
+        # A planning call (no tools) must not advance the file-exploration state.
+        if not tools:
+            return ModelResponse(text="plan: 1) list files 2) read each 3) find the flag",
+                                 usage=Usage(input=20, output=10),
+                                 stop_reason="end", spec=self.spec)
         # Harvest filenames from the most recent tool observations.
         for m in messages:
             if m.role == "tool" and m.content:

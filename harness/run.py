@@ -41,6 +41,7 @@ def run(config: Config) -> dict:
         work_root=Path(config.work_root),
         concurrency=config.concurrency,
         max_error_retries=config.max_error_retries,
+        plan_first=config.plan_first,
     )
     log.event("config", backend=config.inference_backend, platform=config.platform,
               concurrency=config.concurrency, dry_run=config.dry_run)

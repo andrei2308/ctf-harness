@@ -51,6 +51,12 @@ class Config:
     # challenges). Flip to True and resubmits are disabled (one attempt/flag).
     penalize_wrong: bool = False
     max_submits_per_flag: int = 3
+    # One upfront planning turn per challenge (ReAct&Plan — arXiv:2412.02776).
+    plan_first: bool = True
+    # On escalation after a stall, restart with a clean context seeded by a recap
+    # instead of resuming the full transcript. Research-mixed / model-dependent,
+    # so default off; revalidate once the organizers' model is known.
+    fresh_context_on_escalate: bool = False
 
     def ladder(self) -> Ladder:
         return default_ladder(self.fast_model, self.strong_model)

@@ -53,15 +53,23 @@ def default_ladder(fast_model: str, strong_model: str | None = None) -> Ladder:
     None: the ladder then escalates by effort and depth on that single model.
     """
     strong = strong_model or fast_model
+    # Temperature rises with the rung: precise on the cheap first pass, more
+    # exploratory once a challenge has resisted (diversity helps break a stall).
+    # Hyperparameters materially affect results (arXiv:2508.05674); tune once the
+    # organizers' model is known.
     return Ladder([
         # Cheap breadth-first sweep.
-        Rung(ModelSpec(name=fast_model, effort=Effort.LOW, max_tokens=4096), max_iterations=12),
+        Rung(ModelSpec(name=fast_model, effort=Effort.LOW, max_tokens=4096,
+                       temperature=0.2), max_iterations=12),
         # First escalation: same-ish cost, more room to think and iterate.
-        Rung(ModelSpec(name=fast_model, effort=Effort.MEDIUM, max_tokens=8192), max_iterations=25),
+        Rung(ModelSpec(name=fast_model, effort=Effort.MEDIUM, max_tokens=8192,
+                       temperature=0.4), max_iterations=25),
         # Bring in the strong model for the resisters.
-        Rung(ModelSpec(name=strong, effort=Effort.HIGH, max_tokens=16384), max_iterations=40),
+        Rung(ModelSpec(name=strong, effort=Effort.HIGH, max_tokens=16384,
+                       temperature=0.6), max_iterations=40),
         # Last resort for high-value hard challenges.
-        Rung(ModelSpec(name=strong, effort=Effort.MAX, max_tokens=32768), max_iterations=60),
+        Rung(ModelSpec(name=strong, effort=Effort.MAX, max_tokens=32768,
+                       temperature=0.8), max_iterations=60),
     ])
 
 

@@ -208,6 +208,19 @@ Agents, D-CIPHER, harness-engineering surveys):
 - **Stuck-loop detection** (`agents/base.py`) — an attempt that repeats an action
   or stops producing new evidence is nudged once, then bailed to STALLED so the
   ladder escalates a rung instead of spinning on the token budget.
+- **Planning step** (`agents/base.py: _plan`) — one upfront plan per challenge (a
+  no-tool turn), which the ReAct&Plan literature finds is the single biggest
+  lever; replan is folded into the stuck nudge. Toggle with `plan_first`.
+- **Per-rung sampling** (`scheduler/ladder.py`) — temperature rises with the rung
+  (0.2 → 0.8): precise on the cheap first pass, more exploratory once a challenge
+  resists. `top_p` plumbed through both adapters.
+- **Fresh-context restart on escalation** (`single.py`, `fresh_context_on_escalate`)
+  — after a stall, optionally restart the next rung with a clean context seeded by
+  a short recap (flags live in the evidence store, not the chat). Default off;
+  revalidate once the model is known.
+- **Persistent interactive debugger** (`agents/exttools.py: gdb_session`) —
+  EnIGMA-style stateful gdb (break/run/step/inspect across calls) for pwn/rev,
+  alongside the one-shot `gdb`.
 
 ## Multi-flag / staged submission
 

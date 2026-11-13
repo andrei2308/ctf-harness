@@ -55,9 +55,22 @@ class SolverState:
     ctx: ToolContext
     iters_done: int = 0
     notes: list[str] = field(default_factory=list)
+    planned: bool = False          # a planning step has run for this challenge
 
     def note(self, text: str) -> None:
         self.notes.append(text)
+
+    def restart_conversation(self, system_prompt: str, task_prompt: str,
+                             recap: str = "") -> None:
+        """Reset the transcript to a clean context (system + task + a short recap),
+        keeping the evidence store and notes. Used for a fresh-context escalation:
+        research finds a clean window can beat compaction once state is
+        externalised (and our grounded flags live in the store, not the chat)."""
+        self.messages = [Message(role="system", content=system_prompt),
+                         Message(role="user", content=task_prompt)]
+        if recap:
+            self.messages.append(Message(role="user", content=recap))
+        self.planned = False       # allow a fresh plan at the new rung
 
 
 def new_state(challenge_id: str, work_dir: Path, ctx: ToolContext,
@@ -76,7 +89,7 @@ class Solver:
     def __init__(self, *, model: Model, profile: ToolProfile, state: SolverState,
                  budget: Budget, log: RunLog, submitter: FlagSubmitter,
                  max_iterations: int = 40, stuck_patience: int = 6,
-                 stuck_dup_threshold: int = 3):
+                 stuck_dup_threshold: int = 3, plan_first: bool = True):
         self.model = model
         self.profile = profile
         self.state = state
@@ -84,6 +97,7 @@ class Solver:
         self.log = log
         self.submitter = submitter
         self.max_iterations = max_iterations
+        self.plan_first = plan_first
         self._tools = profile.by_name()
         # Stuck-loop detection: end an attempt early (so the ladder escalates)
         # when it stops making progress or repeats an action, instead of burning
@@ -108,6 +122,27 @@ class Solver:
         cid = self.state.challenge_id
         acc, req = self.submitter.accepted_count(cid), self.submitter.required(cid)
         return f"{acc} of {req} flag(s) accepted for this challenge."
+
+    def _plan(self) -> None:
+        """One upfront planning turn (no tools). The ReAct&Plan literature finds a
+        single planning step drives the biggest single gain (arXiv:2412.02776).
+        Costs one model call."""
+        cid = self.state.challenge_id
+        self.state.messages.append(Message(role="user", content=(
+            "Before acting, write a brief numbered plan (3-6 steps): what to check "
+            "first, the most likely vulnerability/technique for this challenge, and "
+            "which tools you will use. If unsure of the type, say how you'll "
+            "identify it. Keep it short; then begin executing.")))
+        try:
+            resp = self.model.complete(self.state.messages, [])   # planning: no tools
+        except (ModelError, ContextOverflow):
+            self.state.planned = True
+            return
+        self.budget.charge_usage(cid, resp.usage)
+        self.state.messages.append(Message(role="assistant",
+                                           content=resp.text or "(no plan produced)"))
+        self.state.planned = True
+        self.log.event("solver.plan", challenge=cid, chars=len(resp.text or ""))
 
     def _handle_tool_call(self, tc) -> Message:
         # Track repeated actions for stuck detection: a repeated (tool, args)
@@ -145,6 +180,9 @@ class Solver:
         if self.submitter.is_solved(cid):
             return SolveOutcome(Outcome.SOLVED, cid, "already solved", True,
                                 self.state.iters_done)
+
+        if self.plan_first and not self.state.planned:
+            self._plan()
 
         grounded_any = bool(self.state.store.grounded_flags())
 

@@ -221,6 +221,15 @@ Agents, D-CIPHER, harness-engineering surveys):
 - **Persistent interactive debugger** (`agents/exttools.py: gdb_session`) —
   EnIGMA-style stateful gdb (break/run/step/inspect across calls) for pwn/rev,
   alongside the one-shot `gdb`.
+- **Run-log judge** (`harness/judge.py`) — CTFJudge/CCI-style analysis of a run
+  log into a between-run improvement report (partial-credit progress score,
+  per-category solve rates, concrete suggestions like "found a flag but didn't
+  submit it"). `python -m harness.judge <log>` (+ optional `--llm` diagnosis).
+- **Prompt-injection hardening** — every specialist is told to treat file/tool/
+  service/knowledge text as untrusted data, never instructions, and to stay in
+  scope.
+- **Benchmark converter** (`scripts/convert_benchmark.py`) — turns CTFTiny / NYU /
+  InterCode / generic datasets into the suite layout for `harness.bench`.
 
 ## Multi-flag / staged submission
 

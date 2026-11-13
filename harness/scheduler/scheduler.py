@@ -280,7 +280,7 @@ class Scheduler:
                           task_prompt=specialist.task_prompt(c, work_dir, conn, files,
                                                              available=self._available))
         self.log.event("scheduler.prepared", challenge=c.id,
-                       specialist=specialist.kind.value, files=len(files),
+                       specialist=specialist.profile().name, files=len(files),
                        has_target=conn is not None)
         return state, specialist
 

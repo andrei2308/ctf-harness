@@ -75,6 +75,19 @@ A converter is ~30 lines: iterate the dataset's tasks, copy files into
 `docker-compose.yml`, either translate the service into a `service.cmd` that
 launches it, or run compose yourself and point `target.url`/`host:port` at it.
 
+`scripts/convert_benchmark.py` does this for the common layouts:
+
+```bash
+python scripts/convert_benchmark.py --spec ctftiny --src /path/to/CTFTiny --out suites/ctftiny
+python scripts/convert_benchmark.py --spec generic --src ./tasks     --out suites/mine
+python -m harness.bench --fixtures suites/ctftiny --backend openai --concurrency 4
+```
+
+Presets (`ctftiny`/`nyu`/`intercode`/`generic`) hold best-effort field names —
+verify against the dataset you pulled and override with `--metadata`/`--flag-key`
+if a task fails to parse. Run it on your dev machine (datasets need internet to
+fetch; keep them and the converted suites out of git).
+
 Keep converters and pulled datasets out of this repo (they're large and some have
 their own licenses) — `.gitignore` already excludes `runs/`; add your
 `benchmarks/` data dir there too.
@@ -93,3 +106,18 @@ their own licenses) — `.gitignore` already excludes `runs/`; add your
   grounding guard is letting junk through.
 - **solves** — solve order + seconds-to-first-flag. First-blood and earliest-last-
   flag both reward speed, so this is the number to drive down.
+
+## Analyse a run (judge)
+
+After any run, `harness.judge` turns the JSONL log into a between-run improvement
+report — per-challenge progress score (partial credit), per-category solve rates,
+and concrete suggestions (e.g. "found a flag but did not submit it" → a plumbing
+gap; "weakest category: crypto"). No re-run, zero token cost.
+
+```bash
+python -m harness.judge runs/logs/run-<id>.jsonl
+python -m harness.judge runs/logs/run-<id>.jsonl --llm --backend openai   # + model diagnosis
+```
+
+This is the core of the dev loop: run → judge → change the harness/prompts/tools
+→ re-run. The run log is the only way to learn between attempts, so keep them.

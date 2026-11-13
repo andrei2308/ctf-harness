@@ -105,7 +105,7 @@ def run_challenge(*, challenge: Challenge, platform: Platform, ladder: Ladder,
     sys_p = specialist.system_prompt()
     task_p = specialist.task_prompt(challenge, work_dir, conn, files, available=available)
     state = new_state(cid, work_dir, ctx, system_prompt=sys_p, task_prompt=task_p)
-    log.event("challenge.prepared", challenge=cid, specialist=specialist.kind.value,
+    log.event("challenge.prepared", challenge=cid, specialist=specialist.profile().name,
               files=len(files), has_target=conn is not None,
               flags_required=challenge.flags_required)
 

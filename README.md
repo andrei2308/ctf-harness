@@ -52,7 +52,11 @@ harness/
   agents/        Tool profiles + solver loop + static/interactive(pwn)/web specialists
   telemetry/     Append-only JSONL run log with secret redaction
   config.py      Every organizer unknown as a knob with a sane default
-  run.py         Entrypoint wiring it all together
+  single.py      PRODUCTION path: solve one challenge (one container/challenge)
+  bench.py       Local benchmark runner + score report (dev/measurement)
+  run.py         Multi-challenge runner (dev convenience)
+Dockerfile       Submission image: harness + full CTF toolset
+BENCHMARKS.md    How to point the benchmark loop at Cybench/NYU/InterCode
 fixtures/        Self-contained demo challenges (one solvable, one not) for the offline rig
 tests/           pytest; grounding, budget, submit, solver, end-to-end
 ```
@@ -72,6 +76,21 @@ holds end to end). A JSONL log lands in `runs/logs/`.
 ```bash
 python -m pytest -q        # 19 tests: grounding, budget, submit, solver, e2e
 ```
+
+## Entry points
+
+```bash
+# Production: solve the one challenge this container was given (what the image runs)
+python -m harness.single --challenge <id>        # or CTF_CHALLENGE_ID; else the only one
+
+# Local measurement: run a whole suite and print a score report
+python -m harness.bench --fixtures <suite> --backend openai --concurrency 4
+```
+
+`single` escalates effort up the ladder within one per-run budget and streams
+flags as they ground — the shipped path. `bench` drives the whole suite through
+the multi-challenge `Scheduler` and reports solve rate, per-category breakdown,
+accuracy and solve timing (see BENCHMARKS.md).
 
 ## The two swappable interfaces
 

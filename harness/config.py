@@ -92,6 +92,9 @@ def make_platform(config: Config):
     if config.platform == "files":
         from .platforms.files_target import FilesTargetPlatform
         return FilesTargetPlatform(config.fixtures_root)
+    if config.platform == "benchmark":
+        from .platforms.benchmark import BenchmarkPlatform
+        return BenchmarkPlatform(config.fixtures_root)
     if config.platform == "mcp":
         from .platforms.cyberedu_mcp import CyberEduMcpPlatform
         if not config.contest_id:

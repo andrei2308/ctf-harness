@@ -1,181 +1,166 @@
 # ctf-harness — DefCamp 2026 Agentic CTF
 
-An autonomous harness that plays a sealed CTF on its own: no internet, no human
-at the controls, no mid-run steering. Lean orchestrator + per-category specialist
-agents + a hard flag-grounding guard + streaming submission + heavy logging,
-behind two swappable interfaces so the organizer unknowns never block the build.
+An autonomous harness that plays a sealed CTF on its own: no internet, no human at
+the controls, no mid-run steering. A lean orchestrator routes each challenge to a
+per-category specialist, which works it through a tool loop behind a hard
+flag-grounding guard, streams flags the instant they verify, and logs everything
+for the between-run dev loop.
 
-This is the **skeleton** from step 1 of the build handoff. It runs today, fully
-offline, and you drop real values in as organizer answers land.
+It runs today, fully offline (**56 passing tests**, no network, no credentials),
+behind two swappable interfaces (`Platform`, `Model`) so the remaining organizer
+unknowns don't block anything — you drop real values in as they land.
 
 ## Competition setup (confirmed by the AISafe organizers)
 
-- **Submission = a Docker image we build** and upload to the platform; we put
-  whatever tools we want in it. The organizers run it on their infra. → see
-  `Dockerfile` (the image *is* the submission).
+- **Submission = a Docker image we build** and upload; the organizers run it on
+  their infra. We put whatever tools we want in it → the image *is* the submission
+  (`Dockerfile`).
 - **One container run per challenge**, challenge auto-started. So the production
-  path is single-challenge: a run reads its one assigned challenge and solves it.
-  The multi-challenge `Scheduler` here is therefore the **local benchmark/dev
-  harness**; the shipped run loop is the single-challenge `Solver`
-  (`agents/base.py`). *(Single-challenge entrypoint lands with the starter kit.)*
+  path is single-challenge (`harness/single.py`); the multi-challenge `Scheduler`
+  is the local benchmark/dev harness.
 - **One shared model for everyone, via the organizers' endpoint**, announced with
-  its limits at the event. → single-model, effort-based ladder; point the
+  its limits at the event → single-model, effort-based ladder; point the
   OpenAI-compatible adapter at their endpoint via env.
-- **A wrong flag costs nothing.** → `penalize_wrong=False`; submit aggressively.
-- **Starter kit + docs arrive on the platform at event start** — that defines the
-  exact challenge-read / flag-submit interface, which slots behind `Platform`.
+- **A wrong flag costs nothing** → `penalize_wrong=False`; submit aggressively.
+- **Starter kit + docs arrive at event start** — they define the exact
+  challenge-read / flag-submit interface, which slots behind `Platform`.
 
-Still pending: the model id + exact token/time limits, and the starter-kit
-platform interface. Everything else is wired and swappable.
+Still pending from the organizers: the model id + exact token/time limits, and the
+starter-kit platform interface. Everything else is wired and swappable.
 
 ## Why it's shaped this way (the rules drive the design)
 
 | Rule | Design consequence |
 |---|---|
-| Fixed, equal concurrency | Edge is in *what each slot does* → the escalation-ladder scheduler (`scheduler/`) |
-| Hard token+time limits, "no burning tokens" | Budget is a gate on every attempt, not end-of-run bookkeeping (`scheduler/budget.py`); prompts are terse |
-| Retries + update-between-runs, no mid-run steering | The dev/observability loop *is* the competition → structured JSONL logging (`telemetry/`) |
-| Dynamic scoring, rare flags worth most | Breadth-first first pass banks easy/rare flags; escalation targets high-value resisters |
-| Tiebreak = earliest last-flag | Flags stream the instant they verify (`flags/submit.py`), never batched |
-| No internet; stay in scope | Network tools are bound to the challenge target; a specialist literally cannot reach another host (`agents/tools.py`) |
-| Confabulated flags burn submissions | A flag counts only if it traces to real tool output (`flags/grounding.py`) |
+| Fixed, equal concurrency | Edge is in *what each slot does* → the escalation-ladder scheduler |
+| Hard token+time limits, "no burning tokens" | Budget gates every attempt; prompts are terse; output is summarized; stalls bail early |
+| Retries + update-between-runs, no mid-run steering | The dev/observability loop *is* the competition → JSONL logging + the run-log judge |
+| Dynamic scoring, rare flags worth most | Breadth-first first pass banks easy/rare flags; escalation targets resisters |
+| Tiebreak = earliest last-flag | Flags stream the instant they verify, never batched |
+| No internet; stay in scope | Network tools are bound to the challenge target; a baked-in knowledge base replaces web search |
+| Confabulated flags are worthless | A flag counts only if it traces to real tool output (`flags/grounding.py`) |
 | Keep secrets out of the submission | Credentials read from env only; logs redact; `.gitignore` guards cookies |
 
 ## Layout
 
 ```
 harness/
-  platforms/     Platform interface + adapters (files-on-disk, CyberEDU MCP)
+  platforms/     Platform interface + adapters (files/benchmark, CyberEDU MCP)
   inference/     Model interface + adapters (offline rule/scripted, Anthropic, OpenAI-compatible)
   scheduler/     Escalation ladder + fixed-concurrency pool + park/resume + budget
-  flags/         Evidence-grounded flag extraction (confab guard) + streaming submit
-  agents/        Tool profiles + solver loop + static/interactive(pwn)/web specialists
+  flags/         Evidence-grounded flag extraction (confab guard) + streaming multi-flag submit
+  agents/        Solver loop + category specialists + tool wrappers + knowledge retrieval
   telemetry/     Append-only JSONL run log with secret redaction
   config.py      Every organizer unknown as a knob with a sane default
   single.py      PRODUCTION path: solve one challenge (one container/challenge)
   bench.py       Local benchmark runner + score report (dev/measurement)
+  judge.py       Run-log analyzer: between-run improvement report
   run.py         Multi-challenge runner (dev convenience)
-Dockerfile       Submission image: harness + full CTF toolset
-BENCHMARKS.md    How to point the benchmark loop at Cybench/NYU/InterCode
-fixtures/        Self-contained demo challenges (one solvable, one not) for the offline rig
-tests/           pytest; grounding, budget, submit, solver, end-to-end
+knowledge/       Offline knowledge base the `knowledge` tool greps (drop ctf-notes here)
+scripts/         convert_benchmark.py (CTFTiny/NYU/InterCode -> suite layout)
+Dockerfile       Kali-based submission image: harness + full CTF toolset
+BENCHMARKS.md    How to run/convert benchmarks and read the judge report
+fixtures/        Self-contained demo challenges for the offline rig
+tests/           pytest (56): grounding, budget, submit, solver, routing, tools, e2e
 ```
 
 ## Quickstart (offline, no network, no credentials)
 
 ```bash
 python -m harness.run --platform files --fixtures fixtures --backend rule
+python -m pytest -q
 ```
 
-This exercises the whole enumerate → solve → ground → submit → log loop using the
-`rule` model (a no-LLM heuristic that only runs tools; it never invents a flag)
-and the files adapter. Expect `warmup-01` solved and `locked-02` dropped with
-**zero** submissions (its flag isn't in any provided file — the grounding guard
-holds end to end). A JSONL log lands in `runs/logs/`.
-
-```bash
-python -m pytest -q        # 19 tests: grounding, budget, submit, solver, e2e
-```
+The run exercises the whole enumerate → plan → solve → ground → submit → log loop
+with the `rule` model (a no-LLM heuristic that only runs tools; it never invents a
+flag). Expect `warmup-01` and `multi-03` solved and `locked-02` dropped with
+**zero** submissions (its flag isn't in any file — the grounding guard holds). A
+JSONL log lands in `runs/logs/`.
 
 ## Entry points
 
 ```bash
 # Production: solve the one challenge this container was given (what the image runs)
-python -m harness.single --challenge <id>        # or CTF_CHALLENGE_ID; else the only one
+python -m harness.single --challenge <id>          # or CTF_CHALLENGE_ID; else the only one
 
 # Local measurement: run a whole suite and print a score report
 python -m harness.bench --fixtures <suite> --backend openai --concurrency 4
+
+# Between-run learning: analyze a run log
+python -m harness.judge runs/logs/run-<id>.jsonl
 ```
 
 `single` escalates effort up the ladder within one per-run budget and streams
-flags as they ground — the shipped path. `bench` drives the whole suite through
-the multi-challenge `Scheduler` and reports solve rate, per-category breakdown,
-accuracy and solve timing (see BENCHMARKS.md).
+flags as they ground — the shipped path. `bench` drives a suite through the
+`Scheduler` and reports solve rate, per-category breakdown, accuracy and timing.
+`judge` turns a log into per-challenge progress scores and concrete suggestions.
 
-## The two swappable interfaces
+## Architecture
 
-**`Platform`** (`platforms/base.py`) — `list_challenges / get_challenge /
-download_files / start_instance / get_conn_info / submit_flag`. The scheduler and
-solvers talk only to this.
-- `FilesTargetPlatform` — challenges as directories on disk (+ optional target
-  host/port/url, + local self-grading). The local test rig and the likely
-  fallback runtime shape.
-- `CyberEduMcpPlatform` — wired against `CyberEDU-Cyber-Range/cyberedu-mcp`
-  (stdio). Tool-name mapping is in place; **load-bearing response field names are
-  marked `CONFIRM`** — verify against the live server. Cookie is read from
-  `CYBEREDU_SESSION` env only.
+**Two swappable interfaces.** `Platform` (`platforms/base.py`:
+`list_challenges / get_challenge / download_files / start_instance /
+get_conn_info / submit_flag`) — adapters: `FilesTargetPlatform`,
+`BenchmarkPlatform` (launches local services), `CyberEduMcpPlatform` (wired, MCP
+response fields marked `CONFIRM`). `Model` (`inference/base.py`:
+`.complete(messages, tools) -> ModelResponse`) — solvers never import a vendor SDK;
+adapters are offline `rule`/`scripted`, `anthropic`, `openai` (endpoint/key from env).
 
-**`Model`** (`inference/base.py`) — `.complete(messages, tools) -> ModelResponse`
-with normalized tool calls + token usage. Solvers never import a vendor SDK.
-- `null`/`rule` — offline, deterministic, for the dev loop and tests.
-- `anthropic`, `openai` — lazy-imported; endpoint/key from env.
+**Escalation ladder + scheduler.** Rungs are (model + effort + iteration budget +
+temperature). Rung 0 is a cheap breadth-first sweep; a **stalled** challenge
+escalates a rung, a **parked** one (attempt slice spent) resumes with state intact
+so no slot idles; the per-challenge budget is a hard cutoff, the global budget
+stops the run cleanly. With one model it degrades to an effort-only ladder.
 
-## Escalation ladder + scheduler
+**Flag grounding (the core correctness rule).** `EvidenceStore` holds only bytes a
+tool actually produced; model prose is never evidence. `verify_candidate()`
+accepts a model-claimed flag only if it is present verbatim in that evidence, and
+`FlagSubmitter` is the only path to `Platform.submit_flag` — so a confabulated
+flag cannot be submitted. Knowledge-base and summary output are marked
+non-evidence, so an example `CTF{...}` in a writeup can never ground.
 
-`scheduler/ladder.py` defines rungs (model + effort + iteration budget). Default:
-cheap/shallow rung 0 for a breadth-first sweep, escalating to stronger model /
-higher effort / more iterations for resisters. If only one model is provided it
-degrades to an effort-only ladder on that model.
+**Multi-flag / staged submission.** The predecessor agent (CyberEDU's "Overmind",
+which won the UNbreakable România 2026 human finals) *solved* two forensics
+challenges it then couldn't submit, for lack of multi-flag plumbing. So a
+`Challenge` carries `flags_required`, the store latches every distinct flag, and
+the submitter keeps submitting until the challenge is complete; a grounded flag the
+grader rejects is retried a bounded number of times for staged challenges.
+Overmind also won at **64% accuracy** because wrong guesses weren't penalized —
+hence submit-fast-and-often (`penalize_wrong=False`).
 
-`scheduler/scheduler.py` runs a fixed-concurrency pool:
-1. every challenge gets one rung-0 attempt first (bank easy/rare flags early);
-2. a **stalled** challenge escalates a rung; a **parked** challenge (ran out of
-   its attempt slice) resumes at the same rung with state intact, so no slot idles;
-3. resumable work is ordered by partial-signal → value → cheapness;
-4. the per-challenge budget is a hard cutoff (write notes, drop, move on); the
-   global budget stops the whole run cleanly.
+## The submission image & tools
 
-## Open knobs → organizer questions
+The agent is routed to a **category specialist** — rev, pwn, crypto,
+forensics(+stego), web, mobile, blockchain, pyjail, or a generalist fallback —
+each with a concrete tool playbook in its prompt and a fitting profile. Beyond
+`shell`/`write_file`/`knowledge` it gets structured wrappers for the fiddly tools:
+`gdb` (batch, pwndbg-loaded while `--nx` ignores a planted `./.gdbinit`),
+`gdb_session` (persistent interactive debugging), `ghidra_decompile` (Ghidra
+headless → C), and `volatility`. Wrappers force **non-interactive** mode and
+**degrade honestly** — a missing tool returns "not installed", never a fabrication.
 
-Defaults in `config.py`. These map 1:1 to the Tier-1 questions in the handoff:
+The agent can only *run* a tool present at run time (no internet to install one),
+so presence is guaranteed by the **Kali-based** `Dockerfile` (matching the Kali
+workflow in `ctf-notes`), which bakes the full kit:
 
-- **Model** (Q1): `inference_backend`, `fast_model`, `strong_model`, ladder rungs.
-- **Budgets** (Q2): `caps` — `total_*`, `per_challenge_*`, `per_attempt_*`,
-  `count_cached_input`. Also settable via `CTF_*` env vars.
-- **Concurrency** (Q3): `concurrency` (slots). `slots_per_challenge` is noted in
-  the scheduler for if parallel best-of-N-within-a-run is permitted.
-- **Wrong-submission penalty** (Q6): `penalize_wrong` (default False, per the
-  predecessor event); flips the submit posture from aggressive-retry to one
-  attempt per flag.
-- **Platform** (Q4): `platform=files|mcp`, `contest_id`.
-- **Packaging/sandbox** (Q5/Q6): `LocalExecutor` is dev-only; swap for a
-  container executor (read-only rootfs, `/input` ro + `/work` + `/artifacts`,
-  digest-pinned, no runtime installs) without touching tool code.
+- **rev/pwn:** gdb+pwndbg, gdb-multiarch, qemu-user-static, Ghidra, radare2,
+  ropper/ROPgadget, one_gadget, seccomp-tools, patchelf, pwninit, checksec, angr,
+  z3, unicorn, capstone, upx, yara, floss, uncompyle6
+- **crypto:** SageMath, pari/gp, yafu, sympy/numpy/gmpy2, fpylll+cysignals,
+  RsaCtfTool, xortool, roca-detect, pycryptodome
+- **forensics/stego:** volatility3, sleuthkit, bulk-extractor, testdisk, scalpel,
+  binwalk, foremost, exiftool, tshark, qpdf, oletools, imagemagick, ffmpeg, sox,
+  zsteg, stegseek, steghide, outguess, stegsnow, zbar, multimon-ng, **tesseract (OCR)**
+- **cracking:** john, hashcat, hashid, hydra, fcrackzip/pdfcrack, hcxtools +
+  rockyou/SecLists
+- **web:** sqlmap, gobuster, ffuf, feroxbuster, nikto, whatweb, wfuzz, commix,
+  wafw00f, nmap, flask-unsign, jwt_tool
+- **mobile:** jadx, apktool, dex2jar, apksigner
+- **blockchain:** Foundry (`cast`/`forge`/`anvil`), web3.py, slither, solc
 
-## Analysis tools & the submission image
-
-The agent is routed to a **category specialist** — rev, pwn, crypto, forensics
-(+stego), web, mobile, blockchain, pyjail, or a generalist fallback — each
-carrying a concrete tool playbook in its system prompt (which tool for which job)
-and a fitting profile. (The router checks blockchain/pyjail before `web`, so
-`web3` routes to blockchain.)
-Beyond `shell`/`write_file` it gets structured wrappers for the fiddly ones:
-`gdb` (batch, pwndbg-loaded via a trusted init while `--nx` ignores any planted
-`./.gdbinit`), `ghidra_decompile` (Ghidra headless → C), and `volatility`. The
-wrappers force **non-interactive** mode (an autonomous slot must never block on a
-prompt) and **degrade honestly** — a tool the sandbox lacks returns "not
-installed", never a fabricated result.
-
-Because the agent can only *run* a tool that exists at run time (no internet to
-install one), presence is guaranteed by baking tools into the `Dockerfile`
-submission image. At each run's start, `probe_tools()` checks what's actually
-installed and the specialist prompt is told, so the agent only reaches for what's
-there.
-
-The image is **Kali-based** (matches the Kali workflow in `ctf-notes`) and bakes
-the full kit across categories: rev/pwn (gdb+pwndbg, Ghidra, radare2, ropper,
-ROPgadget, one_gadget, seccomp-tools, patchelf, pwninit, checksec, angr, z3,
-unicorn, capstone), crypto (**SageMath**, sympy/numpy/gmpy2, fpylll+cysignals,
-RsaCtfTool, xortool, roca-detect, pycryptodome), forensics/stego (volatility3,
-zsteg, stegseek, steghide, binwalk, foremost, exiftool, tshark, sox), cracking
-(john, hashcat, hashid, hydra, fcrackzip/pdfcrack, hcxtools + rockyou/SecLists),
-web (sqlmap, gobuster, ffuf, nmap, flask-unsign, jwt_tool), mobile
-(jadx, apktool, dex2jar), blockchain (Foundry `cast`/`forge`/`anvil`, web3.py,
-slither, solc), and OCR (`tesseract`). Two run-time caveats no install fixes: **no GPU**
-(hashcat is CPU-only/slow — John is the CPU workhorse) and **no internet**
-(factordb / online RSA lookups are dead — factor locally with sage/yafu).
-
-Build + smoke-test the image (on a machine with Docker + internet):
+At each run's start `probe_tools()` detects what's actually installed and tells the
+specialist, so it only reaches for what's there. Two run-time caveats no install
+fixes: **no GPU** (hashcat is CPU-only/slow — John is the workhorse) and **no
+internet** (factordb / online lookups are dead — factor locally with sage/yafu).
 
 ```bash
 docker build -t ctf-harness:latest .                              # full kit
@@ -186,91 +171,67 @@ docker run --rm ctf-harness:latest ctf-tools                      # list what th
 ```
 
 Packages install in a resilient per-package loop, so a name this Kali snapshot
-lacks only skips that one package (logged `WARN`) instead of failing the build.
+lacks only skips that package (logged `WARN`) instead of failing the build.
+SageMath and SecLists are most of the image size — toggle them off if the
+submission size limit (OPEN) bites.
 
-SageMath and SecLists are most of the image size — toggle them off with the build
-args if the submission size limit (OPEN) bites.
-
-## Research-informed additions
+## Research-informed features
 
 Drawn from the current CTF-agent literature (EnIGMA, CRAKEN/CTFusion, Plain
 Agents, D-CIPHER, harness-engineering surveys):
 
-- **Offline knowledge base + `knowledge` tool** (`knowledge/`, `agents/knowledge.py`)
-  — web access roughly doubles CTF solve rate and is forbidden here, so every
-  specialist can grep a baked-in knowledge base (your `ctf-notes` + cheatsheets)
-  for the known technique. Its output is **non-evidence**: an example `CTF{...}`
-  in a writeup can never ground as a real flag.
-- **Output summarizer** (`agents/tools.py: summarize_output`) — large tool output
-  is shown to the model as head + lines-of-interest + tail (heuristic, no LLM
-  call), so signal survives without spending the scored token budget. The full
-  bytes still go to the evidence store, so grounding never loses a flag.
-- **Stuck-loop detection** (`agents/base.py`) — an attempt that repeats an action
-  or stops producing new evidence is nudged once, then bailed to STALLED so the
-  ladder escalates a rung instead of spinning on the token budget.
-- **Planning step** (`agents/base.py: _plan`) — one upfront plan per challenge (a
-  no-tool turn), which the ReAct&Plan literature finds is the single biggest
-  lever; replan is folded into the stuck nudge. Toggle with `plan_first`.
-- **Per-rung sampling** (`scheduler/ladder.py`) — temperature rises with the rung
-  (0.2 → 0.8): precise on the cheap first pass, more exploratory once a challenge
-  resists. `top_p` plumbed through both adapters.
-- **Fresh-context restart on escalation** (`single.py`, `fresh_context_on_escalate`)
-  — after a stall, optionally restart the next rung with a clean context seeded by
-  a short recap (flags live in the evidence store, not the chat). Default off;
-  revalidate once the model is known.
-- **Persistent interactive debugger** (`agents/exttools.py: gdb_session`) —
-  EnIGMA-style stateful gdb (break/run/step/inspect across calls) for pwn/rev,
-  alongside the one-shot `gdb`.
-- **Run-log judge** (`harness/judge.py`) — CTFJudge/CCI-style analysis of a run
-  log into a between-run improvement report (partial-credit progress score,
-  per-category solve rates, concrete suggestions like "found a flag but didn't
-  submit it"). `python -m harness.judge <log>` (+ optional `--llm` diagnosis).
-- **Prompt-injection hardening** — every specialist is told to treat file/tool/
-  service/knowledge text as untrusted data, never instructions, and to stay in
-  scope.
-- **Benchmark converter** (`scripts/convert_benchmark.py`) — turns CTFTiny / NYU /
-  InterCode / generic datasets into the suite layout for `harness.bench`.
+- **Offline knowledge base + `knowledge` tool** — web access ~doubles solve rate
+  and is forbidden here, so every specialist greps a baked-in base (your
+  `ctf-notes` + cheatsheets) for the known technique. Output is non-evidence.
+- **Output summarizer** — large tool output is shown as head + lines-of-interest +
+  tail (heuristic, zero extra tokens); full bytes still reach the evidence store.
+- **Stuck-loop detection** — repeated actions / no-new-evidence stalls get one
+  nudge, then bail to STALLED so the ladder escalates instead of spinning.
+- **Planning step** — one upfront no-tool plan per challenge (`plan_first`), the
+  single biggest lever in ReAct&Plan; replan folds into the stuck nudge.
+- **Per-rung sampling** — temperature rises 0.2 → 0.8 across the ladder; `top_p`
+  plumbed through both adapters.
+- **Fresh-context restart on escalation** (`fresh_context_on_escalate`, default
+  off) — restart a stalled challenge's next rung with a clean context + recap.
+- **Persistent interactive debugger** (`gdb_session`) — EnIGMA-style stateful gdb
+  for pwn/rev, alongside the one-shot `gdb`.
+- **Run-log judge** (`harness/judge.py`) — CTFJudge/CCI-style report: partial-credit
+  progress scores, per-category solve rates, concrete suggestions.
+- **Prompt-injection hardening** — specialists treat file/tool/service/knowledge
+  text as untrusted data, never instructions, and stay in scope.
+- **Benchmark converter** (`scripts/convert_benchmark.py`) — CTFTiny / NYU /
+  InterCode / generic → the suite layout.
 
-## Multi-flag / staged submission
+## Open knobs → organizer questions
 
-Informed by the predecessor agent (CyberEDU's own "Overmind", which won the
-UNbreakable România 2026 human finals): its *only* failure was two forensics
-challenges it solved but could not submit, because they needed several flags in
-sequence and it had no multi-flag path. So a `Challenge` carries `flags_required`,
-the `EvidenceStore` latches every distinct flag, and `FlagSubmitter` keeps
-submitting until the platform says the challenge is complete (or enough distinct
-flags are accepted). A grounded flag the grader rejects is retried a bounded
-number of times (`max_submits_per_flag`) to handle staged challenges — disabled
-when `penalize_wrong=True`.
+Defaults in `config.py`:
 
-The same run also showed the winning posture was **submit fast and often** (it
-won at 64% accuracy because wrong guesses weren't penalised). The harness streams
-every grounded candidate immediately; set `penalize_wrong=True` if the contest
-rules turn out to charge for wrong submissions (OPEN — confirm with organizers).
+- **Model** (Q1): `inference_backend`, `fast_model`, `strong_model`, ladder rungs.
+- **Budgets** (Q2): `caps` (`total_*`, `per_challenge_*`, `per_attempt_*`,
+  `count_cached_input`); also via `CTF_*` env vars.
+- **Concurrency** (Q3): `concurrency`; `slots_per_challenge` noted for parallel
+  best-of-N if permitted.
+- **Platform** (Q4): `platform=files|benchmark|mcp`, `contest_id`.
+- **Packaging/sandbox** (Q5): the Docker image; `WITH_SAGE`/`WITH_WORDLISTS`.
+- **Wrong-submission penalty** (Q6): `penalize_wrong` (default False).
 
-## Flag grounding guarantee
+## What's left — mostly on your (build) side
 
-`flags/grounding.EvidenceStore` holds only bytes a tool actually produced; the
-model's prose is never evidence. `verify_candidate()` accepts a model-claimed
-flag only if it is present verbatim in that evidence. `FlagSubmitter` is the only
-code path to `Platform.submit_flag`, so a confabulated flag cannot be submitted.
-Covered by `tests/test_grounding.py`, `tests/test_solver.py`, and end to end in
-`tests/test_scheduler_e2e.py`.
-
-## Next steps (from the handoff)
-
-1. **Local test loop** — point the harness at Cybench / NYU CTF Bench /
-   InterCode-CTF via a thin `Platform` adapter (same benchmarks EnIGMA/CAI report
-   on, so numbers are comparable), and rehearse against past CyberEDU/D-CTF-quals
-   challenges through the MCP with your own cookie (**local env only**).
-2. **Harden the specialists** — lean on EnIGMA's interactive ACI for pwn/rev and
-   CAI's one-tool-per-specialist swarm shape; tune prompts and tool profiles from
-   real runs.
-3. **Container executor** — implement the sandboxed `Executor` for real runs.
+1. **`docker build`** on a machine with Docker + internet, then
+   `docker run --rm ctf-harness:latest ctf-tools` to confirm the toolchain landed
+   (the per-package loop logs any `WARN` skips to fix).
+2. **Populate `knowledge/`** with your `ctf-notes` before building
+   (`cp -r ../ctf-notes/* knowledge/`) — the single biggest remaining lift.
+3. **Benchmark** — convert a suite (`scripts/convert_benchmark.py`), run
+   `harness.bench` with a real model endpoint, and `harness.judge` the log for a
+   real capture-rate number and where to tune next.
+4. **Wire the starter-kit `Platform` adapter** when the kit drops; set the model id
+   and token/time caps.
 
 ## Credential hygiene (non-negotiable)
 
 Everything submitted is logged and reviewed. **No secrets in the submission.**
-- The CyberEDU cookie is read from `CYBEREDU_SESSION` at run time; never committed.
+- Credentials (e.g. a CyberEDU cookie via `CYBEREDU_SESSION`) are read from env at
+  run time, never committed or baked into the image.
 - `telemetry/run_log.py` redacts known-sensitive keys from every event.
 - `.gitignore` blocks `.env`, `*.session.json`, `cyberedu_session*`, `runs/`.

@@ -144,12 +144,15 @@ Defaults in `config.py`. These map 1:1 to the Tier-1 questions in the handoff:
 
 ## Analysis tools & the submission image
 
-Specialists get real tooling, not just a shell: `gdb` (batch, pwndbg-loaded via a
-trusted init while `--nx` ignores any planted `./.gdbinit`), `ghidra_decompile`
-(Ghidra headless → C), and `volatility` (memory forensics), plus `shell` /
-`write_file` / the web + service tools. The wrappers force **non-interactive**
-mode (an autonomous slot must never block on a prompt) and **degrade honestly** —
-a tool the sandbox lacks returns "not installed", never a fabricated result.
+The agent is routed to a **category specialist** — rev, pwn, crypto, forensics
+(+stego), web, mobile, or a generalist fallback — each carrying a concrete tool
+playbook in its system prompt (which tool for which job) and a fitting profile.
+Beyond `shell`/`write_file` it gets structured wrappers for the fiddly ones:
+`gdb` (batch, pwndbg-loaded via a trusted init while `--nx` ignores any planted
+`./.gdbinit`), `ghidra_decompile` (Ghidra headless → C), and `volatility`. The
+wrappers force **non-interactive** mode (an autonomous slot must never block on a
+prompt) and **degrade honestly** — a tool the sandbox lacks returns "not
+installed", never a fabricated result.
 
 Because the agent can only *run* a tool that exists at run time (no internet to
 install one), presence is guaranteed by baking tools into the `Dockerfile`
@@ -175,8 +178,12 @@ Build + smoke-test the image (on a machine with Docker + internet):
 docker build -t ctf-harness:latest .                              # full kit
 docker build --build-arg WITH_SAGE=0 --build-arg WITH_WORDLISTS=0 \
   -t ctf-harness:slim .                                           # trim the heavy layers
-docker run --rm ctf-harness:latest python -m pytest -q
+docker run --rm ctf-harness:latest python -m pytest -q            # smoke test
+docker run --rm ctf-harness:latest ctf-tools                      # list what the probe sees
 ```
+
+Packages install in a resilient per-package loop, so a name this Kali snapshot
+lacks only skips that one package (logged `WARN`) instead of failing the build.
 
 SageMath and SecLists are most of the image size — toggle them off with the build
 args if the submission size limit (OPEN) bites.

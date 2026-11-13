@@ -28,29 +28,37 @@ from .tools import MAX_TOOL_OUTPUT, Tool, ToolContext, ToolResult
 # The analysis tools we probe for and advertise to specialists. Binaries checked
 # with `command -v`; python modules with an import.
 _PROBE_BINARIES = [
-    # rev / pwn
-    "gdb", "objdump", "readelf", "nm", "strings", "file", "xxd", "ltrace", "strace",
-    "radare2", "r2", "analyzeHeadless", "checksec", "patchelf", "pwninit",
-    "ropper", "ROPgadget", "one_gadget", "seccomp-tools",
-    # forensics / stego
-    "binwalk", "foremost", "steghide", "stegseek", "zsteg", "exiftool",
-    "tshark", "tcpdump", "sox", "vol", "pdftotext",
+    # rev
+    "gdb", "gdb-multiarch", "objdump", "readelf", "nm", "strings", "file", "xxd",
+    "ltrace", "strace", "radare2", "r2", "analyzeHeadless", "upx", "yara", "floss",
+    "capa", "uncompyle6", "qemu-aarch64-static",
+    # pwn
+    "checksec", "patchelf", "pwninit", "ropper", "ROPgadget", "one_gadget",
+    "seccomp-tools",
+    # forensics
+    "binwalk", "foremost", "scalpel", "bulk_extractor", "fls", "testdisk",
+    "photorec", "exiftool", "tshark", "tcpdump", "pdftotext", "qpdf", "olevba",
+    "convert", "ffmpeg", "7z",
+    # stego
+    "steghide", "stegseek", "zsteg", "outguess", "stegsnow", "zbarimg", "sox",
+    "multimon-ng",
     # crypto
-    "sage", "RsaCtfTool", "xortool", "openssl",
+    "sage", "gp", "RsaCtfTool", "xortool", "yafu", "openssl",
     # cracking
     "john", "hashcat", "hashid", "hydra", "fcrackzip", "pdfcrack", "hcxpcapngtool",
     # web
-    "sqlmap", "gobuster", "ffuf", "nmap", "flask-unsign", "jwt_tool",
+    "sqlmap", "gobuster", "ffuf", "feroxbuster", "nikto", "whatweb", "wfuzz",
+    "commix", "wafw00f", "nmap", "flask-unsign", "jwt_tool",
     # mobile
-    "apktool", "jadx", "d2j-dex2jar",
-    # wifi
-    "aircrack-ng",
+    "apktool", "jadx", "d2j-dex2jar", "apksigner",
+    # net / wifi
+    "aircrack-ng", "socat", "ngrep", "tcpflow", "dig",
 ]
 _PROBE_PYMODULES = {
     "pwntools": "pwn", "z3": "z3", "angr": "angr", "capstone": "capstone",
     "unicorn": "unicorn", "volatility3": "volatility3", "pycryptodome": "Crypto",
     "requests": "requests", "scapy": "scapy", "sympy": "sympy", "numpy": "numpy",
-    "gmpy2": "gmpy2", "fpylll": "fpylll",
+    "gmpy2": "gmpy2", "fpylll": "fpylll", "oletools": "oletools",
 }
 
 

@@ -56,6 +56,10 @@ RUN apt-get update; \
       apktool jadx dex2jar apksigner \
       `# networking` \
       aircrack-ng socat ngrep tcpflow dnsutils hping3 netcat-traditional \
+      `# ocr` \
+      tesseract-ocr tesseract-ocr-eng \
+      `# blockchain (solc; foundry/web3/slither added below)` \
+      solidity \
       `# misc / archives / encodings` \
       jq zip xz-utils zstd lz4 bzip2 \
       ; do \
@@ -82,9 +86,12 @@ RUN for p in \
       fpylll cysignals roca-detect xortool primefac libnum \
       flask-unsign factordb-pycli paddingoracle frida-tools objection \
       oletools uncompyle6 decompyle3 yara-python flare-floss capa \
-      pwntools-blob wfuzz dirsearch arpy ; do \
+      wfuzz dirsearch arpy \
+      `# ocr` pytesseract \
+      `# blockchain` web3 eth-abi eth-account eth-utils slither-analyzer solc-select vyper ; do \
         pip install "$p" || echo "WARN: pip skip $p"; \
-      done
+      done \
+ && (solc-select install 0.8.26 && solc-select use 0.8.26 || echo "WARN: solc-select skip")
 
 # pwndbg init, loaded explicitly by the gdb wrapper via CTF_GDB_INIT (the wrapper
 # runs gdb --nx so a planted ./.gdbinit is ignored). Resolve the real path.
@@ -107,6 +114,11 @@ RUN git clone --depth 1 https://github.com/RsaCtfTool/RsaCtfTool /opt/RsaCtfTool
 ARG PWNINIT_VERSION=3.3.1
 RUN wget -q "https://github.com/io12/pwninit/releases/download/${PWNINIT_VERSION}/pwninit" \
       -O /usr/local/bin/pwninit && chmod +x /usr/local/bin/pwninit || echo "WARN: pwninit skip"
+
+# --- Foundry (forge / cast / anvil) for blockchain challenges ---------------
+ENV PATH="/root/.foundry/bin:${PATH}"
+RUN (curl -L https://foundry.paradigm.xyz | bash && /root/.foundry/bin/foundryup) \
+      || echo "WARN: foundry skip"
 
 # --- heavy optional layers (toggle off to shrink toward a size limit) -------
 ARG WITH_SAGE=1

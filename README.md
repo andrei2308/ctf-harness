@@ -145,8 +145,10 @@ Defaults in `config.py`. These map 1:1 to the Tier-1 questions in the handoff:
 ## Analysis tools & the submission image
 
 The agent is routed to a **category specialist** — rev, pwn, crypto, forensics
-(+stego), web, mobile, or a generalist fallback — each carrying a concrete tool
-playbook in its system prompt (which tool for which job) and a fitting profile.
+(+stego), web, mobile, blockchain, pyjail, or a generalist fallback — each
+carrying a concrete tool playbook in its system prompt (which tool for which job)
+and a fitting profile. (The router checks blockchain/pyjail before `web`, so
+`web3` routes to blockchain.)
 Beyond `shell`/`write_file` it gets structured wrappers for the fiddly ones:
 `gdb` (batch, pwndbg-loaded via a trusted init while `--nx` ignores any planted
 `./.gdbinit`), `ghidra_decompile` (Ghidra headless → C), and `volatility`. The
@@ -167,8 +169,9 @@ unicorn, capstone), crypto (**SageMath**, sympy/numpy/gmpy2, fpylll+cysignals,
 RsaCtfTool, xortool, roca-detect, pycryptodome), forensics/stego (volatility3,
 zsteg, stegseek, steghide, binwalk, foremost, exiftool, tshark, sox), cracking
 (john, hashcat, hashid, hydra, fcrackzip/pdfcrack, hcxtools + rockyou/SecLists),
-web (sqlmap, gobuster, ffuf, nmap, flask-unsign, jwt_tool), and mobile
-(jadx, apktool, dex2jar). Two run-time caveats no install fixes: **no GPU**
+web (sqlmap, gobuster, ffuf, nmap, flask-unsign, jwt_tool), mobile
+(jadx, apktool, dex2jar), blockchain (Foundry `cast`/`forge`/`anvil`, web3.py,
+slither, solc), and OCR (`tesseract`). Two run-time caveats no install fixes: **no GPU**
 (hashcat is CPU-only/slow — John is the CPU workhorse) and **no internet**
 (factordb / online RSA lookups are dead — factor locally with sage/yafu).
 

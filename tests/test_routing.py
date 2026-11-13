@@ -3,8 +3,9 @@
 from harness.agents.specialists import (CryptoSpecialist, ForensicsSpecialist,
                                         GeneralistSpecialist, MobileSpecialist,
                                         PwnSpecialist, RevSpecialist, WebSpecialist,
+                                        BlockchainSpecialist, PyjailSpecialist,
                                         route, _REV, _PWN, _CRYPTO, _FORENSICS,
-                                        _WEB, _MOBILE, _GENERALIST)
+                                        _WEB, _MOBILE, _BLOCKCHAIN, _PYJAIL, _GENERALIST)
 from harness.platforms.base import Challenge, ChallengeKind, ConnInfo
 
 
@@ -20,6 +21,15 @@ def test_category_routing():
     assert route(_ch("Steganography"), None) is _FORENSICS
     assert route(_ch("web"), None) is _WEB
     assert route(_ch("mobile/android"), None) is _MOBILE
+    assert route(_ch("blockchain"), None) is _BLOCKCHAIN
+    assert route(_ch("Smart Contract"), None) is _BLOCKCHAIN
+    # "web3" must go to blockchain, not web (order matters).
+    assert route(_ch("web3"), None) is _BLOCKCHAIN
+    assert route(_ch("pyjail"), None) is _PYJAIL
+
+
+def test_pyjail_profile_has_service_tools():
+    assert {"connect", "send", "recv"} <= set(PyjailSpecialist().profile().by_name())
 
 
 def test_fallback_by_connection_and_kind():
@@ -36,7 +46,7 @@ def test_fallback_by_connection_and_kind():
 def test_every_profile_has_shell_and_valid_schemas():
     for spec in (RevSpecialist(), PwnSpecialist(), CryptoSpecialist(),
                  ForensicsSpecialist(), WebSpecialist(), MobileSpecialist(),
-                 GeneralistSpecialist()):
+                 BlockchainSpecialist(), PyjailSpecialist(), GeneralistSpecialist()):
         prof = spec.profile()
         names = set(prof.by_name())
         assert "shell" in names and "write_file" in names

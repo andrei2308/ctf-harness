@@ -159,6 +159,9 @@ class ForensicsSpecialist(Specialist):
             "(JPEG, crack with rockyou), `outguess`, `stegsnow`; `zbar` for QR; "
             "`sox`/spectrogram and `multimon-ng` for audio. PDFs: `pdf-parser`, "
             "`qpdf`; Office macros: `oletools` (olevba).\n"
+            "- Text baked into an image/scan → OCR with `tesseract` (preprocess "
+            "first with `imagemagick`: grayscale, threshold, upscale) or via "
+            "`pytesseract`.\n"
             f"{_FLAG_CONTRACT}\n{_EFFICIENCY}"
         )
 
@@ -205,6 +208,58 @@ class MobileSpecialist(Specialist):
         )
 
 
+class BlockchainSpecialist(Specialist):
+    kind = ChallengeKind.INTERACTIVE   # usually an RPC endpoint + a contract
+
+    def profile(self) -> ToolProfile:
+        return ToolProfile("blockchain", _base())
+
+    def system_prompt(self) -> str:
+        return (
+            "You are a blockchain / smart-contract specialist (EVM/Solidity). You "
+            "typically get an RPC endpoint, a challenge/setup contract address, and "
+            "a player key; tools via `shell`: Foundry (`cast`, `forge`, `anvil`), "
+            "`web3.py`, `slither`, `solc`. Playbook:\n"
+            "- Read the target: `slither` for vulns on the source; `cast code`/"
+            "`cast storage`/`cast call` to inspect bytecode and on-chain state.\n"
+            "- Exploit the usual classes: reentrancy, missing/!onlyOwner access "
+            "control, `delegatecall`/`tx.origin`, uninitialized or overlapping "
+            "storage, unchecked return, integer overflow (<0.8), signature replay, "
+            "flash-loan/price logic.\n"
+            "- Drive state with `cast send`/`web3.py` (sign with the given key); "
+            "many challenges expose `isSolved()` — satisfy it, then read the flag "
+            "(an emitted event, a getter, or the challenge's flag endpoint).\n"
+            f"{_FLAG_CONTRACT}\n{_EFFICIENCY}"
+        )
+
+
+class PyjailSpecialist(Specialist):
+    kind = ChallengeKind.INTERACTIVE
+
+    def profile(self) -> ToolProfile:
+        return ToolProfile("pyjail", _base() + [
+            ServiceConnectTool(), ServiceSendTool(), ServiceRecvTool()])
+
+    def system_prompt(self) -> str:
+        return (
+            "You are a sandbox-escape (pyjail) specialist. You usually face a "
+            "Python (sometimes bash/calc) jail over a service (`connect`/`send`/"
+            "`recv`), or a local script. Playbook:\n"
+            "- Pin down the filter exactly: which characters/names/imports are "
+            "blocked, the Python version, and any audit hooks "
+            "(`sys.addaudithook`, PEP 578).\n"
+            "- Reach code execution despite the blacklist: builtins via "
+            "`().__class__.__base__.__subclasses__()`, `__import__`, `__builtins__`, "
+            "`getattr` chains, `breakpoint()`; dodge filters with getattr/encoding/"
+            "format-strings/unicode; if `eval`/`exec` are blocked, try `__reduce__` "
+            "or raw bytecode.\n"
+            "- Goal is usually to read the flag file or spawn a shell "
+            "(`os.system`/`subprocess`/`os.popen`). Build the payload in a "
+            "`write_file` script and deliver it over the socket.\n"
+            f"{_FLAG_CONTRACT}\n{_EFFICIENCY}"
+        )
+
+
 class GeneralistSpecialist(Specialist):
     """Fallback for misc / unlabelled challenges: broad toolset, identify first."""
 
@@ -220,8 +275,9 @@ class GeneralistSpecialist(Specialist):
             "First identify what you have: `file`, `strings`, `binwalk`, "
             "`exiftool`. Then treat it as the matching category — a binary "
             "(decompile with `ghidra`/`gdb`), a cipher (SageMath/`pycryptodome`), "
-            "a capture or image (`tshark`/`volatility`/`zsteg`), or an encoding "
-            "(base64/hex/`CyberChef`-style transforms via `shell`).\n"
+            "a capture or image (`tshark`/`volatility`/`zsteg`, OCR text with "
+            "`tesseract`), or an encoding (base64/hex/`CyberChef`-style transforms "
+            "via `shell`).\n"
             f"{_FLAG_CONTRACT}\n{_EFFICIENCY}"
         )
 
@@ -233,15 +289,19 @@ _CRYPTO = CryptoSpecialist()
 _FORENSICS = ForensicsSpecialist()
 _WEB = WebSpecialist()
 _MOBILE = MobileSpecialist()
+_BLOCKCHAIN = BlockchainSpecialist()
+_PYJAIL = PyjailSpecialist()
 _GENERALIST = GeneralistSpecialist()
 
-# Category keyword -> specialist. First substring match wins (order matters:
-# check 'pwn'/'rev' before generic words).
+# Category keyword -> specialist. First substring match wins, so order matters:
+# blockchain/pyjail are checked before 'web' (so "web3" -> blockchain, not web).
 _CATEGORY_RULES: list[tuple[tuple[str, ...], Specialist]] = [
     (("pwn", "exploit", "binary exploit"), _PWN),
     (("rev", "reversing", "reverse"), _REV),
     (("crypto", "cryptography"), _CRYPTO),
     (("forensic", "stego", "steg"), _FORENSICS),
+    (("blockchain", "smart contract", "solidity", "web3", "evm", "defi"), _BLOCKCHAIN),
+    (("pyjail", "jail"), _PYJAIL),
     (("web", "http"), _WEB),
     (("mobile", "android", "apk", "ios"), _MOBILE),
 ]

@@ -53,12 +53,17 @@ _PROBE_BINARIES = [
     "apktool", "jadx", "d2j-dex2jar", "apksigner",
     # net / wifi
     "aircrack-ng", "socat", "ngrep", "tcpflow", "dig",
+    # ocr
+    "tesseract",
+    # blockchain
+    "forge", "cast", "anvil", "slither", "solc",
 ]
 _PROBE_PYMODULES = {
     "pwntools": "pwn", "z3": "z3", "angr": "angr", "capstone": "capstone",
     "unicorn": "unicorn", "volatility3": "volatility3", "pycryptodome": "Crypto",
     "requests": "requests", "scapy": "scapy", "sympy": "sympy", "numpy": "numpy",
     "gmpy2": "gmpy2", "fpylll": "fpylll", "oletools": "oletools",
+    "web3": "web3", "pytesseract": "pytesseract",
 }
 
 

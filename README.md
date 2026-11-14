@@ -6,7 +6,7 @@ per-category specialist, which works it through a tool loop behind a hard
 flag-grounding guard, streams flags the instant they verify, and logs everything
 for the between-run dev loop.
 
-It runs today, fully offline (**107 passing tests**, no network, no credentials),
+It runs today, fully offline (**115 passing tests**, no network, no credentials),
 behind two swappable interfaces (`Platform`, `Model`) so the remaining organizer
 unknowns don't block anything — you drop real values in as they land.
 
@@ -61,7 +61,7 @@ scripts/         convert_benchmark.py (CTFTiny/NYU/InterCode -> suite layout)
 Dockerfile       Kali-based submission image: harness + full CTF toolset
 BENCHMARKS.md    How to run/convert benchmarks and read the judge report
 fixtures/        Self-contained demo challenges for the offline rig
-tests/           pytest (107): grounding, budget, submit, solver, routing, tools, e2e, review regressions
+tests/           pytest (115): grounding, budget, submit, solver, routing, tools, e2e, review regressions
 ```
 
 > **Start with [HANDOFF.md](HANDOFF.md)**: what you must supply for a run to work,
@@ -176,7 +176,7 @@ internet** (factordb / online lookups are dead — factor locally with sage/yafu
 docker build -t ctf-harness:latest .                              # full kit
 docker build --build-arg WITH_SAGE=0 --build-arg WITH_WORDLISTS=0 \
   -t ctf-harness:slim .                                           # trim the heavy layers
-docker run --rm -e CTF_BACKEND=rule ctf-harness:latest python -m pytest -q   # smoke test
+docker run --rm ctf-harness:latest python -m pytest -q            # smoke test
 docker run --rm ctf-harness:latest ctf-tools                      # list what the probe sees
 ```
 
@@ -225,7 +225,8 @@ Agents, D-CIPHER, harness-engineering surveys):
 
 ## Open knobs → organizer questions
 
-Defaults in `config.py`:
+Set them in **`contest.env`** (one file, baked into the image, overridden by the
+real environment). Defaults in `config.py`:
 
 - **Model** (Q1): `inference_backend`, `fast_model`, `strong_model`, ladder rungs.
 - **Budgets** (Q2): `caps` (`total_*`, `per_challenge_*`, `per_attempt_*`,
@@ -236,7 +237,8 @@ Defaults in `config.py`:
   one model request.
 - **Concurrency** (Q3): `concurrency`; `slots_per_challenge` noted for parallel
   best-of-N if permitted.
-- **Platform** (Q4): `platform=files|benchmark|mcp`, `contest_id`.
+- **Platform** (Q4): `platform=files|benchmark|mcp` or `module:Class`
+  (skeleton: `harness/platforms/starter_kit.py`), `contest_id`.
 - **Packaging/sandbox** (Q5): the Docker image; `WITH_SAGE`/`WITH_WORDLISTS`.
 - **Wrong-submission penalty** (Q6): `penalize_wrong` (default False).
 - **Flag format**: `CTF_FLAG_REGEX` (default: `CTF{...}` with optional prefix).

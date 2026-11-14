@@ -23,7 +23,7 @@ _EFFORT_STR = {Effort.LOW: "low", Effort.MEDIUM: "medium", Effort.HIGH: "high", 
 _OVERFLOW_PHRASES = (
     "context length", "context_length", "context window", "maximum context",
     "too long", "too many tokens", "reduce the length", "exceeds the model",
-    "max_tokens", "maximum input length",
+    "maximum input length",
 )
 
 
@@ -44,6 +44,9 @@ def _raw_args(arguments: dict):
 
 
 class OpenAIModel(Model):
+    _mct_models: set[str] = set()             # models that want max_completion_tokens
+    _fixed_sampling_models: set[str] = set()  # models that refuse temperature/top_p
+
     def __init__(self, spec: ModelSpec, *, api_key: str | None = None,
                  base_url: str | None = None, client=None, send_effort: bool = False):
         super().__init__(spec)
@@ -51,6 +54,10 @@ class OpenAIModel(Model):
         self._api_key = api_key or os.environ.get("OPENAI_API_KEY") or "not-needed"
         self._base_url = base_url or os.environ.get("OPENAI_BASE_URL")
         self._send_effort = send_effort
+        # Learned from the endpoint's own errors (see complete): some models take
+        # max_completion_tokens instead of max_tokens, or refuse a temperature.
+        self._use_completion_tokens = False
+        self._drop_sampling = False
 
     def _ensure_client(self):
         if self._client is not None:
@@ -111,12 +118,16 @@ class OpenAIModel(Model):
         kwargs: dict = {
             "model": self.spec.name,
             "messages": self._to_chat(messages),
-            "max_tokens": self.spec.max_tokens,
         }
-        if self.spec.temperature is not None:
-            kwargs["temperature"] = self.spec.temperature
-        if self.spec.top_p is not None:
-            kwargs["top_p"] = self.spec.top_p
+        cls = type(self)
+        use_mct = self._use_completion_tokens or self.spec.name in cls._mct_models
+        drop_sampling = self._drop_sampling or self.spec.name in cls._fixed_sampling_models
+        kwargs["max_completion_tokens" if use_mct else "max_tokens"] = self.spec.max_tokens
+        if not drop_sampling:
+            if self.spec.temperature is not None:
+                kwargs["temperature"] = self.spec.temperature
+            if self.spec.top_p is not None:
+                kwargs["top_p"] = self.spec.top_p
         wrapped = self._to_tools(tools)
         if wrapped:
             kwargs["tools"] = wrapped
@@ -125,7 +136,17 @@ class OpenAIModel(Model):
 
         try:
             resp = client.chat.completions.create(**kwargs)
-        except Exception as e:  # pragma: no cover
+        except Exception as e:
+            text = str(e).lower()
+            # Parameter-shape rejections: remember per model and retry once. A new
+            # adapter is built per attempt, so the memory lives on the class.
+            if "max_completion_tokens" in text and not use_mct:
+                cls._mct_models.add(self.spec.name)
+                return self.complete(messages, tools)
+            if ("temperature" in text or "top_p" in text) and not drop_sampling and (
+                    "unsupported" in text or "not support" in text or "only the default" in text):
+                cls._fixed_sampling_models.add(self.spec.name)
+                return self.complete(messages, tools)
             if is_context_overflow(str(e)):
                 raise ContextOverflow(str(e)) from e
             raise ModelError(str(e)) from e

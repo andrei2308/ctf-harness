@@ -12,6 +12,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from .agents.tools import Executor, LocalExecutor
+from .envfile import load_env_file
 from .inference.base import Model, ModelSpec
 from .scheduler.budget import Caps
 from .scheduler.ladder import Ladder, Rung, default_ladder
@@ -122,12 +123,23 @@ def make_platform(config: Config):
             raise ValueError("contest_id required for the mcp platform")
         # Cookie read from CYBEREDU_SESSION inside the adapter; never from config.
         return CyberEduMcpPlatform(contest_id=config.contest_id)
+    if ":" in config.platform:
+        # module:Class — an adapter written for the organizers' starter kit, so
+        # adding one needs no edit here.
+        import importlib
+        module, _, cls = config.platform.partition(":")
+        try:
+            return getattr(importlib.import_module(module), cls)()
+        except (ImportError, AttributeError) as e:
+            raise ValueError(f"cannot load platform {config.platform!r}: {e}") from e
     raise ValueError(f"unknown platform: {config.platform}")
 
 
 def config_from_env() -> Config:
     """Build a Config from env vars (handy in a sandbox). Only non-secret knobs;
-    model/platform credentials are read by the adapters themselves."""
+    model/platform credentials are read by the adapters themselves. Settings in
+    contest.env are applied first, as defaults under the real environment."""
+    load_env_file()
     def _int(name, default):
         v = os.environ.get(name)
         return int(v) if v else default

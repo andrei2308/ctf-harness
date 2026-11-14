@@ -5,21 +5,40 @@ run to work. Written 2026-11-14.
 
 ## Where things are
 
-Three branches, stacked. `main` is untouched. Merging the last one brings in all
-three.
+Everything is merged to `main`. The work was done on three stacked branches,
+kept for reference:
 
 | Branch | What it holds |
 |---|---|
 | `fix/review-blockers` | The eight defects from the review (iteration loop, tool-call history, image, shell, resilience, flag format) |
 | `enhance/logging-tokens-time` | Transcript logging, token diet, working time budget |
-| `enhance/recaps-notes-handoff` | Restart handover notes, notes index in the prompt, `preflight`, this file |
+| `enhance/recaps-notes-handoff` | Restart handover notes, notes index in the prompt, `preflight`, `contest.env`, this file |
 
-Verified here: 107 tests pass, and the production path solves a fixture through
+Verified here: 115 tests pass, and the production path solves a fixture through
 the real `openai` SDK against a local fake endpoint that enforces tool-call
 pairing.
 
 **Not verified, and yours to do:** the Docker image has never been built, and
 nothing has run against a real model.
+
+## Changing settings on the day
+
+**One file: `contest.env`** at the repo root. Every setting in this document
+goes there as `NAME=value`. It is copied into the image and read at start-up, so
+the loop is: edit `contest.env`, `docker build` (only the last layer reruns, a
+few seconds), `python -m harness.preflight` inside the image. Anything set in
+the real environment (`docker run -e`, `export`) overrides the file.
+
+What is a setting and what is code:
+
+| Change | Where | Effort |
+|---|---|---|
+| Endpoint, model id, key, limits, flag format, penalty | `contest.env` | Edit a line |
+| Organizer passes a variable under another name | `contest.env`: `OPENAI_BASE_URL=${THEIR_NAME}/v1` | Edit a line |
+| Model wants `max_completion_tokens` or refuses `temperature` | nothing | Handled automatically |
+| How to read the challenge and submit a flag | `harness/platforms/starter_kit.py` | Fill in four methods |
+| Ladder depth and temperatures | `default_ladder` in `harness/scheduler/ladder.py` | Edit one function |
+| Specialist prompts | `harness/agents/specialists.py` | Edit strings |
 
 ## What the model needs: the three required inputs
 
@@ -31,13 +50,11 @@ A run talks to an OpenAI-compatible endpoint. It needs exactly these:
 | Model id | `CTF_FAST_MODEL` | `qwen2.5-coder-32b` | Sends the literal name `fast`; the endpoint rejects it |
 | API key | `OPENAI_API_KEY` | whatever they issue | Sends `not-needed`; fine only if the endpoint has no auth |
 
-`CTF_BACKEND=openai` is also required, but the image already sets it. Outside
-the image, set it yourself (the code default is the offline `rule` model).
+`CTF_BACKEND=openai` is also required; `contest.env` already sets it.
 
 If the organizers inject the endpoint under **different variable names**, map
-them at the top of `docker-entrypoint.sh`, for example
-`export OPENAI_BASE_URL="${THEIR_URL_VAR}"`. You cannot change what they pass at
-run time, only how the image reads it.
+them in `contest.env`, for example `OPENAI_BASE_URL=${THEIR_URL_VAR}/v1`. You
+cannot change what they pass at run time, only how the image reads it.
 
 If they hand out an Anthropic-shaped endpoint instead: `CTF_BACKEND=anthropic`,
 `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`. That adapter is less tested; see
@@ -52,14 +69,14 @@ Known gaps.
 - **A `usage` block in the response.** Without it token caps never trigger and
   only the time cap protects you.
 
-One specific risk: OpenAI's own reasoning models reject `max_tokens` (they want
-`max_completion_tokens`) and non-default `temperature`. If the shared model is
-one of those, `openai_client.py` needs a two-line change. Preflight will show it.
+OpenAI's own reasoning models reject `max_tokens` (they want
+`max_completion_tokens`) and a non-default `temperature`. The adapter detects
+those rejections, switches, and remembers per model, so no change is needed.
 
 ## Check it before you run anything
 
 ```bash
-export CTF_BACKEND=openai OPENAI_BASE_URL=... OPENAI_API_KEY=... CTF_FAST_MODEL=...
+# after filling in contest.env (or exporting the same variables)
 python -m harness.preflight
 ```
 
@@ -90,7 +107,7 @@ In the image:
 python scripts/sync_knowledge.py ../ctf-notes      # notes into the image; see below
 docker build -t ctf-harness:latest .
 docker run --rm ctf-harness:latest ctf-tools       # must list pwntools, z3, angr
-docker run --rm -e CTF_BACKEND=rule ctf-harness:latest python -m pytest -q
+docker run --rm ctf-harness:latest python -m pytest -q
 docker run --rm -e OPENAI_BASE_URL=... -e OPENAI_API_KEY=... -e CTF_FAST_MODEL=... \
   -e CTF_PLATFORM=files -e CTF_FIXTURES=/opt/ctf-harness/fixtures \
   ctf-harness:latest --challenge warmup-01
@@ -112,21 +129,23 @@ confirms it.
 | A wrong-flag penalty | `CTF_PENALIZE_WRONG=1` | Turns off ungrounded and repeat submissions |
 | Cached input is free | raise `CTF_HISTORY_SOFT_CHARS` | Trimming old results breaks the cache prefix |
 
-Bake the final values into the `Dockerfile` `ENV` line next to `CTF_BACKEND`.
-The remaining size knobs are in `harness/agents/limits.py`.
+Put the final values in `contest.env`; commented examples for each are already
+there. The remaining size knobs are in `harness/agents/limits.py`.
 
 ## Platform inputs (still open)
 
 The harness also needs to be told the challenge and how to submit. That depends
 on the starter kit, which is not out yet.
 
-- `CTF_PLATFORM` selects the adapter: `files`, `benchmark` or `mcp`.
+- `CTF_PLATFORM` selects the adapter: `files`, `benchmark`, `mcp`, or
+  `module:Class` for your own.
 - `CTF_CHALLENGE_ID` or `--challenge` picks the challenge; with neither, the
   first one the platform lists is used.
-- When the kit lands, write one adapter implementing `Platform`
-  (`harness/platforms/base.py`: six methods) and add it to `make_platform` in
-  `config.py`. Wrap transport failures in `PlatformError`. `submit_flag` is
-  retried and queued for you.
+- When the kit lands, fill in the four `TODO` methods in
+  `harness/platforms/starter_kit.py` (list the challenge, fetch its files, say
+  where the service is, submit a flag) and uncomment its `CTF_PLATFORM` line in
+  `contest.env`. No other file needs touching. Raise `PlatformError` on
+  transport failures; `submit_flag` is then retried and queued for you.
 
 ## Your notes in the image
 
@@ -149,8 +168,8 @@ Two things to know:
 2. Convert one benchmark suite (`BENCHMARKS.md`) and run it against any real
    model. Read transcripts of the failures; that is where the next gains are.
 3. Decide whether the image size is acceptable (`WITH_SAGE`, `WITH_WORDLISTS`).
-4. On the day: set the three inputs, run preflight, set the limit knobs, write
-   the platform adapter, rebuild, run preflight inside the image.
+4. On the day: fill in `contest.env` (three inputs, then limits), run preflight,
+   fill in `starter_kit.py`, rebuild, run preflight inside the image.
 
 ## Known gaps
 

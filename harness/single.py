@@ -227,7 +227,8 @@ def _parse(argv: list[str]) -> tuple[Config, str | None]:
                                 description="Solve a single challenge (production path)")
     p.add_argument("--challenge", default=None,
                    help="challenge id to solve; default: the one the platform presents")
-    p.add_argument("--platform", choices=["files", "mcp", "benchmark"], default=cfg.platform)
+    p.add_argument("--platform", default=cfg.platform,
+                   help="files | benchmark | mcp, or module:Class for a custom adapter")
     p.add_argument("--fixtures", default=cfg.fixtures_root)
     p.add_argument("--contest-id", default=cfg.contest_id)
     p.add_argument("--backend", choices=["rule", "null", "anthropic", "openai"],

@@ -37,11 +37,11 @@ class _EchoFlagTool(Tool):
         return ToolResult(self.name, f"the flag is {FLAG}".encode(), "reveal:out")
 
 
-def _mk(model, profile):
+def _mk(model, profile, penalize_wrong=False):
     d = tempfile.mkdtemp()
     log = RunLog(d)
     plat = _Plat()
-    sub = FlagSubmitter(plat, log)
+    sub = FlagSubmitter(plat, log, penalize_wrong=penalize_wrong)
     ctx = ToolContext(challenge_id="c1", work_dir=Path(d), executor=LocalExecutor())
     state = new_state("c1", Path(d), ctx, system_prompt="sys", task_prompt="go")
     solver = Solver(model=model, profile=profile, state=state,
@@ -63,12 +63,15 @@ def test_grounded_flag_via_tool_is_solved_and_submitted():
 
 
 def test_prose_flag_without_evidence_is_refused():
-    # The model asserts a flag it never obtained from a tool; must not submit.
+    # The model asserts a flag it never obtained from a tool. When wrong flags
+    # are penalised it must not be submitted. (When they are free it is worth a
+    # try: see test_review_fixes.py.)
     model = ScriptedModel([
         ModelResponse(text=f"The flag is {FLAG}", stop_reason="end"),
         ModelResponse(text="ok I give up", stop_reason="end"),
     ])
-    solver, plat, sub, log = _mk(model, ToolProfile("t", [_EchoFlagTool()]))
+    solver, plat, sub, log = _mk(model, ToolProfile("t", [_EchoFlagTool()]),
+                                 penalize_wrong=True)
     out = solver.run()
     log.close()
     assert plat.calls == []                      # nothing submitted

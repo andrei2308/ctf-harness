@@ -124,6 +124,12 @@ class Budget:
                     raise BudgetExceeded("seconds", f"challenge:{challenge}",
                                          pc.seconds, c.per_challenge_seconds)
 
+    def seconds_left(self) -> float | None:
+        """Wall-clock seconds before the global time cap, or None if uncapped."""
+        if not self.caps.total_seconds:
+            return None
+        return max(0.0, self.caps.total_seconds - (time.monotonic() - self._started))
+
     def attempt_remaining(self, challenge: str) -> tuple[float, float]:
         """(token_fraction_left, second_fraction_left) for the current attempt
         slice, each in [0, 1]. The scheduler parks when either nears 0. Returns

@@ -117,7 +117,11 @@ class LocalExecutor(Executor):
     def run(self, cmd: str, cwd: Path, timeout: float) -> tuple[bytes, int]:
         try:
             proc = subprocess.run(
-                ["bash", "-lc", cmd],
+                # Not a login shell: `-l` sources /etc/profile, which on Debian
+                # and Kali resets PATH (dropping the image's venv and tool dirs),
+                # and ~/.profile, which with HOME=cwd is a file in the untrusted
+                # challenge directory.
+                ["bash", "-c", cmd],
                 cwd=str(cwd),
                 env={
                     # Inherit the image's PATH so baked-in tools (a venv with

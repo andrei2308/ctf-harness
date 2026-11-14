@@ -107,6 +107,10 @@ class Message:
     content: str = ""
     tool_call_id: str | None = None   # set when role == "tool"
     name: str | None = None           # tool name, when role == "tool"
+    # Set on an assistant turn that requested tools. Every backend requires the
+    # call to precede its result in the transcript, and without it the model
+    # cannot see which command produced which output.
+    tool_calls: tuple[ToolCall, ...] = ()
 
 
 class ModelError(RuntimeError):

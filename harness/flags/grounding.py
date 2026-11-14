@@ -22,6 +22,7 @@ loose enough for multi-stage/odd flags — tune from real challenges.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 
@@ -30,6 +31,45 @@ from dataclasses import dataclass, field
 # (any non-brace run) because flags vary (sha256 hex, words, symbols). Tighten
 # per the organizers' confirmed grammar. Case-insensitive prefix is tolerated.
 DEFAULT_FLAG_RE = re.compile(rb"CTF\{[^}\r\n]{1,512}\}", re.IGNORECASE)
+
+# The default used at run time. The flag grammar is not confirmed, and both
+# `CTF{..}` and prefixed forms such as `DCTF{..}` are plausible, so this captures
+# up to 8 alphanumerics glued to the front as `prefix` and the bare form as
+# `bare`. A match with a prefix yields BOTH candidates (bare first): one of them
+# is right, and which one cannot be told from the bytes alone ("DCTF{x}" vs a
+# "CTF{x}" that follows padding in a dump).
+VARIANT_FLAG_RE = re.compile(
+    rb"(?P<prefix>[A-Za-z0-9]{0,8}?)(?P<bare>CTF\{[^}\r\n]{1,512}\})", re.IGNORECASE)
+
+
+def flag_pattern() -> re.Pattern[bytes]:
+    """The flag pattern for this run. Set CTF_FLAG_REGEX once the organizers
+    confirm the format (e.g. `flag\\{[^}]+\\}`); it is then used verbatim, with no
+    prefix variants. An invalid regex falls back to the default."""
+    raw = os.environ.get("CTF_FLAG_REGEX", "").strip()
+    if raw:
+        try:
+            return re.compile(raw.encode("utf-8"))
+        except re.error:
+            pass
+    return VARIANT_FLAG_RE
+
+
+def candidates(pattern: re.Pattern[bytes], data: bytes) -> list[bytes]:
+    """Every flag candidate `pattern` finds in `data`, in order, de-duplicated."""
+    out: list[bytes] = []
+    for m in pattern.finditer(data):
+        groups = m.groupdict()
+        if groups.get("bare") is not None:
+            found = [groups["bare"]]
+            if groups.get("prefix"):
+                found.append(groups["prefix"] + groups["bare"])
+        else:
+            found = [m.group(0)]
+        for raw in found:
+            if raw not in out:
+                out.append(raw)
+    return out
 
 
 @dataclass
@@ -93,8 +133,7 @@ class EvidenceStore:
                 prior_tail = prev.data[-600:]
                 break
         haystack = prior_tail + data
-        for m in self._pattern.finditer(haystack):
-            raw = m.group(0)
+        for raw in candidates(self._pattern, haystack):
             flag = raw.decode("utf-8", "replace")
             if flag not in self._latched:
                 gf = GroundedFlag(flag=flag, raw=raw, source=source, evidence_seq=ev.seq)
@@ -133,6 +172,12 @@ class EvidenceStore:
     @property
     def total_bytes(self) -> int:
         return self._bytes
+
+    def claims_in(self, text: str) -> list[str]:
+        """Flag-shaped strings in model prose, using this store's pattern. These
+        are CLAIMS, not evidence; the caller decides what to do with them."""
+        return [raw.decode("utf-8", "replace")
+                for raw in candidates(self._pattern, text.encode("utf-8", "replace"))]
 
 
 def extract_grounded(store: EvidenceStore) -> list[GroundedFlag]:

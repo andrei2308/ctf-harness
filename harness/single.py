@@ -24,7 +24,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from .agents.base import Outcome, Solver, new_state
+from .agents.base import Outcome, Solver, SolverState, new_state
 from .agents.exttools import probe_tools
 from .agents.specialists import route
 from .agents.tools import ToolContext
@@ -62,16 +62,22 @@ def run_challenge(*, challenge: Challenge, platform: Platform, ladder: Ladder,
                   model_factory, budget: Budget, log: RunLog,
                   submitter: FlagSubmitter, executor, work_root,
                   available: set[str] | None = None, max_attempts: int = 50,
-                  plan_first: bool = True, fresh_context: bool = False) -> ChallengeResult:
+                  plan_first: bool = True, fresh_context: bool = False,
+                  top_rung_restarts: int = 6) -> ChallengeResult:
     """Drive one challenge to completion: prepare, then climb the effort ladder
-    until solved, the per-run budget is spent, or ideas run out.
+    until solved or the per-run budget is spent.
 
-    Outcome handling mirrors the scheduler's, but linear:
+    This container exists for one challenge, so budget left unspent is wasted.
+    Once the ladder is climbed, the top rung is re-run from a clean context (up
+    to `top_rung_restarts` times) instead of giving up.
+
+    Outcome handling:
       SOLVED     -> done
       EXHAUSTED  -> per-challenge budget cutoff; stop
-      PARKED     -> resume the SAME rung (attempt slice spent, not a failure)
-      STALLED    -> escalate to the next rung
-      ERROR      -> escalate (bounded by max_attempts)
+      PARKED     -> resume the SAME rung (attempt budget slice spent)
+      STALLED    -> next rung; past the top, restart the top rung fresh
+      ERROR      -> model endpoint kept failing: retry the same rung, and after
+                    three in a row treat it as a stall
     """
     cid = challenge.id
     submitter.register(cid, challenge.flags_required)
@@ -111,8 +117,10 @@ def run_challenge(*, challenge: Challenge, platform: Platform, ladder: Ladder,
 
     rung = 0
     attempts = 0
+    restarts = 0
+    errors_in_a_row = 0
     reason = "no attempt"
-    while ladder.has_rung(rung) and attempts < max_attempts:
+    while attempts < max_attempts:
         if submitter.is_solved(cid):
             break
         attempts += 1
@@ -123,25 +131,37 @@ def run_challenge(*, challenge: Challenge, platform: Platform, ladder: Ladder,
                         plan_first=plan_first)
         try:
             out = solver.run()
-            model.close()
         except BudgetExceeded as e:
-            model.close()
             reason = f"per-run budget exhausted: {e}"
             log.event("challenge.budget_stop", challenge=cid, reason=str(e))
             break
+        finally:
+            model.close()
 
         reason = out.reason
-        if out.outcome == Outcome.SOLVED:
-            break
-        if out.outcome == Outcome.EXHAUSTED:
+        if out.outcome in (Outcome.SOLVED, Outcome.EXHAUSTED):
             break
         if out.outcome == Outcome.PARKED:
             continue                      # resume same rung
-        # STALLED / ERROR -> escalate effort (optionally with a clean context)
-        rung += 1
-        if fresh_context and ladder.has_rung(rung):
+        if out.outcome == Outcome.ERROR:
+            errors_in_a_row += 1
+            if errors_in_a_row < 3:
+                continue                  # endpoint trouble: same rung again
+        errors_in_a_row = 0
+
+        # STALLED (or persistent errors): escalate. Past the top rung, keep
+        # spending the remaining budget on clean-context restarts of the top rung.
+        if ladder.has_rung(rung + 1):
+            rung += 1
+            if fresh_context:
+                state.restart_conversation(sys_p, task_p, _recap(state))
+                log.event("challenge.fresh_context", challenge=cid, rung=rung)
+        elif restarts < top_rung_restarts:
+            restarts += 1
             state.restart_conversation(sys_p, task_p, _recap(state))
-            log.event("challenge.fresh_context", challenge=cid, rung=rung)
+            log.event("challenge.top_rung_restart", challenge=cid, restart=restarts)
+        else:
+            break
 
     solved = submitter.is_solved(cid)
     log.event("challenge.done", challenge=cid, solved=solved, attempts=attempts,
@@ -177,7 +197,8 @@ def solve_one(config: Config, challenge_id: str | None = None) -> dict:
             model_factory=make_model_factory(config), budget=budget, log=log,
             submitter=submitter, executor=config.executor(), work_root=config.work_root,
             plan_first=config.plan_first,
-            fresh_context=config.fresh_context_on_escalate)
+            fresh_context=config.fresh_context_on_escalate,
+            top_rung_restarts=config.top_rung_restarts)
         summary = {
             "challenge": result.challenge,
             "solved": result.solved,

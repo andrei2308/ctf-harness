@@ -57,6 +57,9 @@ class Config:
     # instead of resuming the full transcript. Research-mixed / model-dependent,
     # so default off; revalidate once the organizers' model is known.
     fresh_context_on_escalate: bool = False
+    # Production (one challenge per container): after the ladder is climbed,
+    # how many clean-context restarts of the top rung to spend remaining budget on.
+    top_rung_restarts: int = 6
 
     def ladder(self) -> Ladder:
         return default_ladder(self.fast_model, self.strong_model)
@@ -145,4 +148,5 @@ def config_from_env() -> Config:
         run_dir=os.environ.get("CTF_RUN_DIR", "runs/logs"),
         dry_run=os.environ.get("CTF_DRY_RUN", "").lower() in ("1", "true", "yes"),
         penalize_wrong=os.environ.get("CTF_PENALIZE_WRONG", "").lower() in ("1", "true", "yes"),
+        top_rung_restarts=_int("CTF_TOP_RUNG_RESTARTS", 6),
     )

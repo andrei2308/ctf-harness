@@ -71,7 +71,8 @@ def test_flag_in_knowledge_output_does_not_ground():
     with tempfile.TemporaryDirectory() as d:
         log = RunLog(d)
         plat = _Plat()
-        sub = FlagSubmitter(plat, log)
+        # Strict mode (wrong flags penalised): prose claims need evidence.
+        sub = FlagSubmitter(plat, log, penalize_wrong=True)
         ctx = ToolContext(challenge_id="c", work_dir=Path(d), executor=LocalExecutor())
         state = new_state("c", Path(d), ctx, "sys", "go")
         model = ScriptedModel([

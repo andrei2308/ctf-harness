@@ -53,16 +53,26 @@ class AnthropicModel(Model):
             if m.role == "system":
                 system_parts.append(m.content)
             elif m.role == "tool":
-                api_msgs.append({
-                    "role": "user",
-                    "content": [{
-                        "type": "tool_result",
-                        "tool_use_id": m.tool_call_id or "",
-                        "content": m.content,
-                    }],
-                })
+                block = {"type": "tool_result", "tool_use_id": m.tool_call_id or "",
+                         "content": m.content or "(no output)"}
+                # All results for one assistant turn go in a single user message.
+                prev = api_msgs[-1] if api_msgs else None
+                if (prev and prev["role"] == "user" and isinstance(prev["content"], list)
+                        and prev["content"] and prev["content"][0].get("type") == "tool_result"):
+                    prev["content"].append(block)
+                else:
+                    api_msgs.append({"role": "user", "content": [block]})
+            elif m.role == "assistant" and m.tool_calls:
+                blocks: list[dict] = []
+                if m.content:
+                    blocks.append({"type": "text", "text": m.content})
+                for tc in m.tool_calls:
+                    blocks.append({"type": "tool_use", "id": tc.id, "name": tc.name,
+                                   "input": tc.arguments})
+                api_msgs.append({"role": "assistant", "content": blocks})
             else:
-                api_msgs.append({"role": m.role, "content": m.content})
+                # The API rejects empty text content.
+                api_msgs.append({"role": m.role, "content": m.content or "(no text)"})
         return "\n\n".join(p for p in system_parts if p), api_msgs
 
     def complete(self, messages: list[Message], tools: list[dict] | None = None) -> ModelResponse:

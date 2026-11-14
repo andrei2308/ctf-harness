@@ -13,7 +13,7 @@
 #   docker build -t ctf-harness:latest .                                  # full
 #   docker build --build-arg WITH_SAGE=0 --build-arg WITH_WORDLISTS=0 \
 #     -t ctf-harness:slim .                                               # trimmed
-#   docker run --rm ctf-harness:latest python -m pytest -q               # smoke
+#   docker run --rm -e CTF_BACKEND=rule ctf-harness:latest python -m pytest -q   # smoke
 #   docker run --rm ctf-harness:latest ctf-tools                         # list what's present
 #
 # Run-time constraints no install changes: NO GPU (hashcat is CPU-only/slow —
@@ -135,7 +135,13 @@ RUN if [ "$WITH_WORDLISTS" = "1" ]; then apt-get update && \
 # --- the harness ------------------------------------------------------------
 WORKDIR /opt/ctf-harness
 COPY . /opt/ctf-harness
-RUN pip install -e .
+# The model SDKs are extras, not core deps: without them every model call fails
+# with "SDK not installed". pytest is here for the in-image smoke test.
+RUN pip install -e ".[openai,anthropic,dev]"
+# Image defaults: talk to an OpenAI-compatible endpoint (OPENAI_BASE_URL /
+# OPENAI_API_KEY from the run environment). Set CTF_FAST_MODEL and CTF_PLATFORM
+# here once the organizers publish the model id and the starter-kit interface.
+ENV CTF_BACKEND=openai
 # Offline knowledge base the `knowledge` tool greps (the web-search substitute).
 # `knowledge/` is copied in above; drop your ctf-notes there before building
 # (cp -r ../ctf-notes/* knowledge/) for the biggest gain.

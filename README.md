@@ -6,7 +6,7 @@ per-category specialist, which works it through a tool loop behind a hard
 flag-grounding guard, streams flags the instant they verify, and logs everything
 for the between-run dev loop.
 
-It runs today, fully offline (**56 passing tests**, no network, no credentials),
+It runs today, fully offline (**78 passing tests**, no network, no credentials),
 behind two swappable interfaces (`Platform`, `Model`) so the remaining organizer
 unknowns don't block anything — you drop real values in as they land.
 
@@ -61,7 +61,7 @@ scripts/         convert_benchmark.py (CTFTiny/NYU/InterCode -> suite layout)
 Dockerfile       Kali-based submission image: harness + full CTF toolset
 BENCHMARKS.md    How to run/convert benchmarks and read the judge report
 fixtures/        Self-contained demo challenges for the offline rig
-tests/           pytest (56): grounding, budget, submit, solver, routing, tools, e2e
+tests/           pytest (78): grounding, budget, submit, solver, routing, tools, e2e, review regressions
 ```
 
 ## Quickstart (offline, no network, no credentials)
@@ -90,8 +90,9 @@ python -m harness.bench --fixtures <suite> --backend openai --concurrency 4
 python -m harness.judge runs/logs/run-<id>.jsonl
 ```
 
-`single` escalates effort up the ladder within one per-run budget and streams
-flags as they ground — the shipped path. `bench` drives a suite through the
+`single` escalates effort up the ladder within one per-run budget, then keeps
+restarting the top rung from a clean context (`CTF_TOP_RUNG_RESTARTS`, default 6)
+so budget is not left unspent, and streams flags as they ground — the shipped path. `bench` drives a suite through the
 `Scheduler` and reports solve rate, per-category breakdown, accuracy and timing.
 `judge` turns a log into per-challenge progress scores and concrete suggestions.
 
@@ -114,9 +115,13 @@ stops the run cleanly. With one model it degrades to an effort-only ladder.
 **Flag grounding (the core correctness rule).** `EvidenceStore` holds only bytes a
 tool actually produced; model prose is never evidence. `verify_candidate()`
 accepts a model-claimed flag only if it is present verbatim in that evidence, and
-`FlagSubmitter` is the only path to `Platform.submit_flag` — so a confabulated
-flag cannot be submitted. Knowledge-base and summary output are marked
-non-evidence, so an example `CTF{...}` in a writeup can never ground.
+`FlagSubmitter` is the only path to `Platform.submit_flag`. Knowledge-base and
+summary output are marked non-evidence, so an example `CTF{...}` in a writeup can
+never ground. A flag the model only claims in prose is refused when wrong flags
+are penalised (`penalize_wrong=True`); while they are free (the confirmed rule)
+it is submitted once as an ungrounded try, since the guard could then only lose
+flags. The flag pattern is `CTF{...}` plus an optional glued prefix (`DCTF{...}`
+submits both forms); set `CTF_FLAG_REGEX` once the format is confirmed.
 
 **Multi-flag / staged submission.** The predecessor agent (CyberEDU's "Overmind",
 which won the UNbreakable România 2026 human finals) *solved* two forensics
@@ -166,7 +171,7 @@ internet** (factordb / online lookups are dead — factor locally with sage/yafu
 docker build -t ctf-harness:latest .                              # full kit
 docker build --build-arg WITH_SAGE=0 --build-arg WITH_WORDLISTS=0 \
   -t ctf-harness:slim .                                           # trim the heavy layers
-docker run --rm ctf-harness:latest python -m pytest -q            # smoke test
+docker run --rm -e CTF_BACKEND=rule ctf-harness:latest python -m pytest -q   # smoke test
 docker run --rm ctf-harness:latest ctf-tools                      # list what the probe sees
 ```
 
@@ -214,6 +219,7 @@ Defaults in `config.py`:
 - **Platform** (Q4): `platform=files|benchmark|mcp`, `contest_id`.
 - **Packaging/sandbox** (Q5): the Docker image; `WITH_SAGE`/`WITH_WORDLISTS`.
 - **Wrong-submission penalty** (Q6): `penalize_wrong` (default False).
+- **Flag format**: `CTF_FLAG_REGEX` (default: `CTF{...}` with optional prefix).
 
 ## What's left — mostly on your (build) side
 

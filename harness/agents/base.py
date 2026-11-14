@@ -15,12 +15,14 @@ SolverState with a higher rung's model.
 
 from __future__ import annotations
 
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
-from ..flags.grounding import DEFAULT_FLAG_RE, EvidenceStore, verify_candidate
+from ..flags.grounding import (EvidenceStore, GroundedFlag, flag_pattern,
+                               verify_candidate)
 from ..flags.submit import FlagSubmitter
 from ..inference.base import (ContextOverflow, Message, Model, ModelError)
 from ..scheduler.budget import Budget, BudgetExceeded
@@ -28,12 +30,21 @@ from ..telemetry.run_log import RunLog
 from .tools import ToolContext, ToolProfile, ToolResult
 
 
+# Waits between retries of a failed model call (rate limit, 5xx, overload). The
+# endpoint is shared by every team at the event, so blips are expected.
+MODEL_RETRY_DELAYS = (2.0, 5.0, 10.0, 20.0, 30.0)
+# Consecutive turns with no tool call (and no accepted flag) before the attempt
+# counts as stalled. Each one gets a nudge to act first.
+MAX_PROSE_TURNS = 2
+_sleep = time.sleep          # indirection so tests can skip real waits
+
+
 class Outcome(str, Enum):
-    SOLVED = "solved"        # a grounded flag was accepted
-    PARKED = "parked"        # attempt slice spent; resumable at a higher rung
+    SOLVED = "solved"        # a flag was accepted
+    PARKED = "parked"        # attempt budget slice spent; resume the same rung
     EXHAUSTED = "exhausted"  # per-challenge cutoff hit; drop it
-    STALLED = "stalled"      # model stopped without a flag; may retry later
-    ERROR = "error"          # unrecoverable error this attempt
+    STALLED = "stalled"      # out of ideas or out of this rung's iterations: escalate
+    ERROR = "error"          # the model endpoint kept failing this attempt
 
 
 @dataclass
@@ -75,7 +86,7 @@ class SolverState:
 
 def new_state(challenge_id: str, work_dir: Path, ctx: ToolContext,
               system_prompt: str, task_prompt: str) -> SolverState:
-    store = EvidenceStore(pattern=DEFAULT_FLAG_RE)
+    store = EvidenceStore(pattern=flag_pattern())
     messages = [
         Message(role="system", content=system_prompt),
         Message(role="user", content=task_prompt),
@@ -177,6 +188,8 @@ class Solver:
         self.budget.start_attempt(cid)
         self.log.attempt_start(cid, self.model.spec.label(), int(self.model.spec.effort))
 
+        # A flag that could not reach the grader earlier goes out first.
+        self.submitter.flush_pending(cid)
         if self.submitter.is_solved(cid):
             return SolveOutcome(Outcome.SOLVED, cid, "already solved", True,
                                 self.state.iters_done)
@@ -185,8 +198,12 @@ class Solver:
             self._plan()
 
         grounded_any = bool(self.state.store.grounded_flags())
+        # Iterations are counted per attempt: `max_iterations` is this rung's
+        # depth, while state.iters_done keeps the challenge's running total.
+        iters = 0
+        prose_turns = 0
 
-        while self.state.iters_done < self.max_iterations:
+        while iters < self.max_iterations:
             # Hard caps: per-challenge cutoff and global pool.
             try:
                 self.budget.check(cid)
@@ -205,9 +222,16 @@ class Solver:
                 return SolveOutcome(Outcome.PARKED, cid, "attempt slice spent",
                                     grounded_any, self.state.iters_done)
 
+            if self.submitter.pending_count(cid):
+                self.submitter.flush_pending(cid)
+                if self.submitter.is_solved(cid):
+                    self.log.attempt_end(cid, Outcome.SOLVED.value, "flag accepted")
+                    return SolveOutcome(Outcome.SOLVED, cid, "flag accepted",
+                                        True, self.state.iters_done)
+
             # Stuck-loop detection: assess after real turns. Nudge once, then bail
             # to STALLED so the scheduler escalates a rung instead of spinning.
-            if self.state.iters_done > 0:
+            if iters > 0:
                 cur = self.state.store.total_bytes
                 self._no_progress = 0 if cur > self._last_evidence_bytes else self._no_progress + 1
                 self._last_evidence_bytes = cur
@@ -233,22 +257,27 @@ class Solver:
                                             "stuck-loop (no new progress)",
                                             grounded_any, self.state.iters_done)
 
+            iters += 1
             self.state.iters_done += 1
             try:
-                resp = self.model.complete(self.state.messages, self.profile.schemas())
+                resp = self._call_model()
             except ContextOverflow:
                 self._compact()
                 continue
             except ModelError as e:
                 self.state.note(f"model error: {e}")
-                self.log.attempt_end(cid, Outcome.PARKED.value, f"model error: {e}")
-                return SolveOutcome(Outcome.PARKED, cid, f"model error: {e}",
+                self.log.attempt_end(cid, Outcome.ERROR.value, f"model error: {e}")
+                return SolveOutcome(Outcome.ERROR, cid, f"model error: {e}",
                                     grounded_any, self.state.iters_done)
 
             self.budget.charge_usage(cid, resp.usage)
 
             if resp.wants_tools:
-                self.state.messages.append(Message(role="assistant", content=resp.text))
+                prose_turns = 0
+                # The calls stay on the assistant turn: the backend needs them to
+                # pair with the results, and the model needs to see what it ran.
+                self.state.messages.append(Message(role="assistant", content=resp.text,
+                                                   tool_calls=resp.tool_calls))
                 for tc in resp.tool_calls:
                     self.state.messages.append(self._handle_tool_call(tc))
                 if self.state.store.grounded_flags():
@@ -265,62 +294,95 @@ class Solver:
                             content=self._progress_note() + " Find the remaining flag(s)."))
                 continue
 
-            # No tool call => the model thinks it is done. Accept a flag ONLY if it
-            # is present in real evidence (confab guard). The model's prose is never
-            # evidence on its own.
+            # No tool call. Either the model is claiming a flag, or it is talking
+            # instead of acting (weaker models do this often). Neither ends the
+            # attempt by itself: handle the claim, nudge, and only call it a stall
+            # after MAX_PROSE_TURNS such turns in a row.
             self.state.messages.append(Message(role="assistant", content=resp.text))
-            claimed = self._claimed_flag(resp.text)
-            if claimed:
-                gf = verify_candidate(self.state.store, claimed)
-                if gf:
-                    grounded_any = True
-                    results = self._submit_grounded([gf])
-                    if self.submitter.is_solved(cid):
-                        self.log.attempt_end(cid, Outcome.SOLVED.value, "flag accepted")
-                        return SolveOutcome(Outcome.SOLVED, cid, "flag accepted",
-                                            True, self.state.iters_done)
-                    # Grounded but the challenge is not fully solved: either it
-                    # needs more flags, or the grader rejected this one. Steer the
-                    # model to keep going instead of stalling.
-                    took = bool(results and (results[0].accepted or results[0].already_solved))
-                    if took:
-                        nudge = (self._progress_note() + " This challenge needs more "
-                                 "flags — find the remaining one(s).")
-                    else:
-                        nudge = ("The grader did not accept that flag. If this is a "
-                                 "staged challenge, find the earlier-stage flag "
-                                 "first; otherwise keep looking.")
-                    self.state.messages.append(Message(role="user", content=nudge))
-                    continue
-                else:
-                    # Model asserted a flag we cannot find in evidence: reject,
-                    # tell it so, and let it keep working.
-                    self.log.flag_candidate(cid, claimed[:16], grounded=False, source="model-prose")
-                    self.state.messages.append(Message(
-                        role="user",
-                        content=("That flag is not present in any tool output I "
-                                 "captured, so it cannot be submitted. Produce the "
-                                 "flag from real output (read the file / service), "
-                                 "or keep working."),
-                    ))
-                    continue
+            prose_turns += 1
+            nudge, was_grounded = self._handle_claims(resp.text)
+            grounded_any = grounded_any or was_grounded
+            if self.submitter.is_solved(cid):
+                self.log.attempt_end(cid, Outcome.SOLVED.value, "flag accepted")
+                return SolveOutcome(Outcome.SOLVED, cid, "flag accepted",
+                                    True, self.state.iters_done)
+            if prose_turns > MAX_PROSE_TURNS:
+                self.state.note("model stopped without an accepted flag")
+                self.log.attempt_end(cid, Outcome.STALLED.value, "no accepted flag")
+                return SolveOutcome(Outcome.STALLED, cid, "model stopped without a flag",
+                                    grounded_any, self.state.iters_done)
+            self.state.messages.append(Message(role="user", content=nudge))
 
-            # Nothing grounded and no new tool call: the attempt stalled.
-            self.state.note("model stopped without a grounded flag")
-            self.log.attempt_end(cid, Outcome.STALLED.value, "no grounded flag")
-            return SolveOutcome(Outcome.STALLED, cid, "model stopped without a flag",
-                                grounded_any, self.state.iters_done)
-
-        self.log.attempt_end(cid, Outcome.PARKED.value, "max iterations")
-        return SolveOutcome(Outcome.PARKED, cid, "max iterations reached",
+        # This rung's depth is spent. That is a reason to escalate, not to resume
+        # the same rung: report STALLED so the caller moves up the ladder.
+        self.state.note("rung depth spent (max iterations)")
+        self.log.attempt_end(cid, Outcome.STALLED.value, "max iterations")
+        return SolveOutcome(Outcome.STALLED, cid, "max iterations reached",
                             grounded_any, self.state.iters_done)
 
     # --- helpers -----------------------------------------------------------
 
-    @staticmethod
-    def _claimed_flag(text: str) -> str | None:
-        m = DEFAULT_FLAG_RE.search(text.encode("utf-8", "replace"))
-        return m.group(0).decode("utf-8", "replace") if m else None
+    def _call_model(self):
+        """One model turn, retried with backoff on transient failures. Raises
+        ModelError once the retries are spent or the time cap is too close to
+        wait; ContextOverflow passes straight through for the caller to compact."""
+        cid = self.state.challenge_id
+        for i in range(len(MODEL_RETRY_DELAYS) + 1):
+            try:
+                return self.model.complete(self.state.messages, self.profile.schemas())
+            except ContextOverflow:
+                raise
+            except ModelError as e:
+                if i == len(MODEL_RETRY_DELAYS):
+                    raise
+                delay = MODEL_RETRY_DELAYS[i]
+                left = self.budget.seconds_left()
+                if left is not None and left <= delay:
+                    raise
+                self.log.event("solver.model_retry", challenge=cid, attempt=i + 1,
+                               wait=delay, error=str(e)[:300])
+                _sleep(delay)
+
+    def _handle_claims(self, text: str) -> tuple[str, bool]:
+        """Act on flag-shaped strings in a prose turn. Returns (the message to
+        send back to the model, whether any claim was grounded in evidence).
+
+        A claim found in real tool output is always submitted. One that is not
+        is submitted only when wrong flags are free; with a penalty it is
+        refused, because model prose alone is not evidence."""
+        cid = self.state.challenge_id
+        claims = self.state.store.claims_in(text)
+        if not claims:
+            return ("Do not stop or narrate: act. Make a tool call now. If you "
+                    "believe you have the flag, print it with a tool so it appears "
+                    "in real output."), False
+        grounded = took = submitted = False
+        for claimed in claims:
+            gf = verify_candidate(self.state.store, claimed)
+            if gf:
+                grounded = True
+            elif self.submitter.allow_ungrounded:
+                self.log.flag_candidate(cid, claimed[:16], grounded=False,
+                                        source="model-prose")
+                gf = GroundedFlag(flag=claimed, raw=claimed.encode("utf-8", "replace"),
+                                  source="model-prose (ungrounded)", evidence_seq=0)
+            else:
+                self.log.flag_candidate(cid, claimed[:16], grounded=False,
+                                        source="model-prose")
+                continue
+            submitted = True
+            res = self.submitter.submit(cid, gf)
+            took = took or res.accepted or res.already_solved
+        if took:
+            return (self._progress_note() + " This challenge needs more flags — "
+                    "find the remaining one(s)."), grounded
+        if submitted:
+            return ("The grader did not accept that flag. Do not guess: derive it "
+                    "from real output. If this is a staged challenge, find the "
+                    "earlier-stage flag first; otherwise keep looking."), grounded
+        return ("That flag is not present in any tool output I captured, so it "
+                "cannot be submitted. Produce the flag from real output (read the "
+                "file / service), or keep working."), grounded
 
     def _compact(self) -> None:
         """Trim the middle of the conversation on context overflow, keeping the
@@ -331,7 +393,15 @@ class Solver:
         if len(msgs) <= 4:
             return
         head = msgs[:2]                 # system + task
-        tail = msgs[-6:]
+        # Keep roughly the last 6 messages, but never start the tail on a tool
+        # result: its assistant call must come with it or the backend rejects
+        # the transcript.
+        cut = len(msgs) - 6
+        while cut > 2 and msgs[cut].role == "tool":
+            cut -= 1
+        if cut <= 2:
+            return
+        tail = msgs[cut:]
         dropped = len(msgs) - len(head) - len(tail)
         self.state.messages = head + [Message(
             role="user", content=f"[{dropped} earlier messages elided to fit context]")

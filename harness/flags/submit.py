@@ -26,7 +26,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-from ..platforms.base import Platform, PlatformError, SubmitResult
+from ..platforms.base import Platform, SubmitResult
 from ..telemetry.run_log import RunLog
 from .grounding import GroundedFlag
 
@@ -49,19 +49,37 @@ class _ChalState:
     solved: bool = False                               # whole challenge complete
 
 
+# Waits between tries when the grader is unreachable. A flag in hand is the most
+# valuable thing in the run, so a blip must not lose it.
+SUBMIT_RETRY_DELAYS = (0.5, 1.0, 2.0, 4.0)
+
+
 class FlagSubmitter:
     """Owns all submissions for a run. Thread-safe; dedupes across slots."""
 
     def __init__(self, platform: Platform, log: RunLog, *, dry_run: bool = False,
-                 penalize_wrong: bool = False, max_submits_per_flag: int = 3):
+                 penalize_wrong: bool = False, max_submits_per_flag: int = 3,
+                 retry_delays: tuple[float, ...] = SUBMIT_RETRY_DELAYS,
+                 sleep=time.sleep):
         self._platform = platform
         self._log = log
         self._dry_run = dry_run
         self._penalize_wrong = penalize_wrong
         self._max_submits = 1 if penalize_wrong else max(1, max_submits_per_flag)
+        self._retry_delays = tuple(retry_delays)
+        self._sleep = sleep
         self._lock = threading.Lock()
         self._chals: dict[str, _ChalState] = {}
+        # Flags that never reached the grader (transport failure), per challenge.
+        self._pending: dict[str, dict[str, GroundedFlag]] = {}
         self.records: list[SubmissionRecord] = []
+
+    @property
+    def allow_ungrounded(self) -> bool:
+        """When a wrong flag costs nothing, a flag the model claims but that is
+        not in tool output is still worth one submission. With a penalty it is
+        not: only grounded flags go out."""
+        return not self._penalize_wrong
 
     # --- registration ------------------------------------------------------
 
@@ -120,13 +138,27 @@ class FlagSubmitter:
         if self._dry_run:
             result = SubmitResult(accepted=True, message="dry-run: not submitted")
         else:
-            try:
-                result = self._platform.submit_flag(challenge, flag)
-            except PlatformError as e:
-                self._log.event("flag.submit_error", challenge=challenge, error=str(e))
-                with self._lock:  # never reached the grader: free the attempt slot
+            result = None
+            for i in range(len(self._retry_delays) + 1):
+                try:
+                    result = self._platform.submit_flag(challenge, flag)
+                    break
+                except Exception as e:  # noqa: BLE001 - any adapter failure is retryable here
+                    self._log.event("flag.submit_error", challenge=challenge,
+                                    error=str(e), attempt=i + 1)
+                    if i < len(self._retry_delays):
+                        self._sleep(self._retry_delays[i])
+            if result is None:
+                # Never reached the grader: free the attempt slot and keep the
+                # flag so flush_pending() can send it once the grader is back.
+                with self._lock:
                     self._chals[challenge].attempts[flag] = tries
-                raise
+                    self._pending.setdefault(challenge, {})[flag] = grounded
+                return SubmitResult(accepted=False, message="submit failed; queued for retry",
+                                    raw={"transport_error": True})
+
+        with self._lock:
+            self._pending.get(challenge, {}).pop(flag, None)
 
         with self._lock:
             st = self._state(challenge)
@@ -145,6 +177,17 @@ class FlagSubmitter:
                         already=result.already_solved,
                         challenge_solved=self.is_solved(challenge), progress=progress)
         return result
+
+    def flush_pending(self, challenge: str) -> list[SubmitResult]:
+        """Resubmit flags that earlier failed to reach the grader. Cheap when
+        there are none; the solver calls it every turn."""
+        with self._lock:
+            waiting = list(self._pending.get(challenge, {}).values())
+        return [self.submit(challenge, gf) for gf in waiting]
+
+    def pending_count(self, challenge: str) -> int:
+        with self._lock:
+            return len(self._pending.get(challenge, {}))
 
     # --- reporting ---------------------------------------------------------
 

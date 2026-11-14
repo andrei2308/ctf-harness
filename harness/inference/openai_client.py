@@ -20,6 +20,14 @@ from .base import (ContextOverflow, Effort, Message, Model, ModelError,
 _EFFORT_STR = {Effort.LOW: "low", Effort.MEDIUM: "medium", Effort.HIGH: "high", Effort.MAX: "high"}
 
 
+def _raw_args(arguments: dict):
+    """Arguments exactly as the model sent them: unparseable JSON was kept under
+    `_raw`, so echo that string back rather than a wrapper it never wrote."""
+    if set(arguments) == {"_raw"} and isinstance(arguments["_raw"], str):
+        return arguments["_raw"]
+    return arguments
+
+
 class OpenAIModel(Model):
     def __init__(self, spec: ModelSpec, *, api_key: str | None = None,
                  base_url: str | None = None, client=None, send_effort: bool = False):
@@ -49,6 +57,15 @@ class OpenAIModel(Model):
             if m.role == "tool":
                 out.append({"role": "tool", "tool_call_id": m.tool_call_id or "",
                             "content": m.content})
+            elif m.role == "assistant" and m.tool_calls:
+                out.append({
+                    "role": "assistant", "content": m.content or "",
+                    "tool_calls": [{
+                        "id": tc.id, "type": "function",
+                        "function": {"name": tc.name,
+                                     "arguments": json.dumps(_raw_args(tc.arguments))},
+                    } for tc in m.tool_calls],
+                })
             else:
                 out.append({"role": m.role, "content": m.content})
         return out
@@ -99,13 +116,17 @@ class OpenAIModel(Model):
         choice = resp.choices[0]
         msg = choice.message
         tool_calls: list[ToolCall] = []
-        for tc in (getattr(msg, "tool_calls", None) or []):
+        for n, tc in enumerate(getattr(msg, "tool_calls", None) or []):
             fn = tc.function
             try:
                 args = json.loads(fn.arguments) if fn.arguments else {}
             except (json.JSONDecodeError, TypeError):
                 args = {"_raw": fn.arguments}
-            tool_calls.append(ToolCall(id=tc.id, name=fn.name, arguments=args))
+            if not isinstance(args, dict):
+                args = {"_raw": fn.arguments}
+            # Some local servers omit the id; the result must still pair with it.
+            tool_calls.append(ToolCall(id=tc.id or f"call_{len(messages)}_{n}",
+                                       name=fn.name, arguments=args))
 
         u = getattr(resp, "usage", None)
         cached = 0

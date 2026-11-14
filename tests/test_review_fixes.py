@@ -139,8 +139,9 @@ def test_single_climbs_ladder_then_restarts_top_rung(tmp_path):
         tool_calls=(ToolCall(f"c{n}", "shell", {"cmd": f"echo step{len(m)}"}),),
         usage=Usage(5, 5), spec=SPEC)
     res, calls, _ = _run_single(tmp_path, shell, top_rung_restarts=2)
-    # rung 0 (2 turns) + rung 1 (3) + two clean restarts of rung 1 (3 each)
-    assert calls == 2 + 3 + 3 + 3
+    # rung 0 (2 turns) + rung 1 (3) + two clean restarts of rung 1 (3 each),
+    # plus one handover-note call before each restart
+    assert calls == 2 + 3 + 3 + 3 + 2
     assert res.attempts == 4 and res.top_rung == 1 and not res.solved
 
 

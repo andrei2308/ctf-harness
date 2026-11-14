@@ -240,7 +240,7 @@ def print_transcript(log_path: str | Path, challenge: str | None = None, out=Non
             line = head + ("\n" + "\n".join("       " + ln for ln in body.splitlines())
                            if body else "")
         elif kind in ("flag.candidate", "flag.submit", "flag.submit_error",
-                      "solver.stuck_nudge", "solver.model_retry",
+                      "solver.stuck_nudge", "solver.model_retry", "solver.recap",
                       "challenge.top_rung_restart", "challenge.fresh_context",
                       "challenge.budget_stop", "challenge.done"):
             extra = {k: v for k, v in ev.items() if k not in ("seq", "t", "kind", "challenge")}

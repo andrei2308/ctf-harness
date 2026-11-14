@@ -24,7 +24,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from .agents.base import Outcome, Solver, SolverState, new_state
+from .agents.base import Outcome, Solver, new_state, restart_recap
 from .agents.exttools import probe_tools
 from .agents.specialists import route
 from .agents.tools import ToolContext
@@ -44,18 +44,6 @@ class ChallengeResult:
     attempts: int
     top_rung: int
     reason: str
-
-
-def _recap(state: SolverState) -> str:
-    """A short recap to seed a fresh-context escalation."""
-    parts = ["(Your earlier attempt's context was reset to stay focused.)"]
-    if state.notes:
-        parts.append("What happened: " + "; ".join(state.notes[-5:]))
-    flags = state.store.grounded_flags()
-    if flags:
-        parts.append(f"{len(flags)} flag(s) already found/submitted.")
-    parts.append("Take a different approach this time.")
-    return "\n".join(parts)
 
 
 def run_challenge(*, challenge: Challenge, platform: Platform, ladder: Ladder,
@@ -115,6 +103,16 @@ def run_challenge(*, challenge: Challenge, platform: Platform, ladder: Ladder,
               files=len(files), has_target=conn is not None,
               flags_required=challenge.flags_required)
 
+    def fresh_start(at_rung: int) -> None:
+        """Reset to a clean context seeded with a handover note written by the
+        model at `at_rung` from the transcript it is about to lose."""
+        m = model_factory(ladder.rung(at_rung).spec)
+        try:
+            recap = restart_recap(m, state, specialist.profile().schemas(), budget, log)
+        finally:
+            m.close()
+        state.restart_conversation(sys_p, task_p, recap)
+
     rung = 0
     attempts = 0
     restarts = 0
@@ -154,11 +152,11 @@ def run_challenge(*, challenge: Challenge, platform: Platform, ladder: Ladder,
         if ladder.has_rung(rung + 1):
             rung += 1
             if fresh_context:
-                state.restart_conversation(sys_p, task_p, _recap(state))
+                fresh_start(rung)
                 log.event("challenge.fresh_context", challenge=cid, rung=rung)
         elif restarts < top_rung_restarts:
             restarts += 1
-            state.restart_conversation(sys_p, task_p, _recap(state))
+            fresh_start(rung)
             log.event("challenge.top_rung_restart", challenge=cid, restart=restarts)
         else:
             break

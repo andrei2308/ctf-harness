@@ -8,8 +8,8 @@ and which the run sandbox forbids.
 ## What to put here
 
 - **Your `ctf-notes`** — the single highest-value content. Before building the
-  image: `cp -r ../ctf-notes/* knowledge/` (or clone it in during the Docker
-  build). Technique notes beat flag-spoiling writeups.
+  image: `python scripts/sync_knowledge.py ../ctf-notes` (copies the text files
+  into `knowledge/ctf-notes/`, which is git-ignored). Technique notes beat flag-spoiling writeups.
 - Cheatsheets, command references, past-writeup method sections, tool recipes.
 - Prefer `.md`/`.txt`/`.rst` (also searched: `.py`, `.sh`). One topic per file or
   clear headings help retrieval.

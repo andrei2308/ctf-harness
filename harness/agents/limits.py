@@ -31,6 +31,11 @@ class Limits:
     reserve_seconds: float = 20.0
     # Ceiling on any single tool call, whatever timeout the model asks for.
     max_tool_seconds: float = 900.0
+    # Size of the notes index placed in the task prompt (0 turns it off). It is
+    # re-sent every turn like the rest of the prompt, so keep it an index.
+    primer_chars: int = 2500
+    # Size of the handover note the model writes before a clean-context restart.
+    recap_chars: int = 3000
 
     @classmethod
     def from_env(cls) -> "Limits":

@@ -6,7 +6,7 @@ per-category specialist, which works it through a tool loop behind a hard
 flag-grounding guard, streams flags the instant they verify, and logs everything
 for the between-run dev loop.
 
-It runs today, fully offline (**94 passing tests**, no network, no credentials),
+It runs today, fully offline (**107 passing tests**, no network, no credentials),
 behind two swappable interfaces (`Platform`, `Model`) so the remaining organizer
 unknowns don't block anything — you drop real values in as they land.
 
@@ -61,8 +61,12 @@ scripts/         convert_benchmark.py (CTFTiny/NYU/InterCode -> suite layout)
 Dockerfile       Kali-based submission image: harness + full CTF toolset
 BENCHMARKS.md    How to run/convert benchmarks and read the judge report
 fixtures/        Self-contained demo challenges for the offline rig
-tests/           pytest (94): grounding, budget, submit, solver, routing, tools, e2e, review regressions
+tests/           pytest (107): grounding, budget, submit, solver, routing, tools, e2e, review regressions
 ```
+
+> **Start with [HANDOFF.md](HANDOFF.md)**: what you must supply for a run to work,
+> how to check the model endpoint (`python -m harness.preflight`), and what is
+> still unverified.
 
 ## Quickstart (offline, no network, no credentials)
 
@@ -207,7 +211,9 @@ Agents, D-CIPHER, harness-engineering surveys):
 - **Per-rung sampling** — temperature rises 0.2 → 0.8 across the ladder; `top_p`
   plumbed through both adapters.
 - **Fresh-context restart on escalation** (`fresh_context_on_escalate`, default
-  off) — restart a stalled challenge's next rung with a clean context + recap.
+  off) — restart a stalled challenge's next rung with a clean context. Before any
+  restart the model writes a handover note (facts, what failed, what to try next)
+  that seeds the new context; a command list is the fallback.
 - **Persistent interactive debugger** (`gdb_session`) — EnIGMA-style stateful gdb
   for pwn/rev, alongside the one-shot `gdb`.
 - **Run-log judge** (`harness/judge.py`) — CTFJudge/CCI-style report: partial-credit
@@ -241,7 +247,9 @@ Defaults in `config.py`:
    `docker run --rm ctf-harness:latest ctf-tools` to confirm the toolchain landed
    (the per-package loop logs any `WARN` skips to fix).
 2. **Populate `knowledge/`** with your `ctf-notes` before building
-   (`cp -r ../ctf-notes/* knowledge/`) — the single biggest remaining lift.
+   (`python scripts/sync_knowledge.py ../ctf-notes`). Each specialist's task
+   prompt then carries an index of its category's notes, and the `knowledge`
+   tool can open a note or section by path.
 3. **Benchmark** — convert a suite (`scripts/convert_benchmark.py`), run
    `harness.bench` with a real model endpoint, and `harness.judge` the log for a
    real capture-rate number and where to tune next.

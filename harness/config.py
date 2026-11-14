@@ -151,6 +151,8 @@ def config_from_env() -> Config:
         inference_backend=os.environ.get("CTF_BACKEND", "rule"),
         fast_model=os.environ.get("CTF_FAST_MODEL", "fast"),
         strong_model=os.environ.get("CTF_STRONG_MODEL") or None,
+        openai_send_effort=os.environ.get("CTF_OPENAI_SEND_EFFORT", "").lower()
+        in ("1", "true", "yes"),
         caps=caps,
         concurrency=_int("CTF_CONCURRENCY", 4),
         platform=os.environ.get("CTF_PLATFORM", "files"),

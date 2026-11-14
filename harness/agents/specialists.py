@@ -20,7 +20,8 @@ from pathlib import Path
 from ..platforms.base import Challenge, ChallengeKind, ConnInfo
 from .exttools import (GdbTool, GhidraDecompileTool, InteractiveGdbTool,
                        VolatilityTool)
-from .knowledge import KnowledgeSearchTool
+from .knowledge import KnowledgeSearchTool, primer
+from .limits import Limits
 from .tools import (HttpTool, ServiceConnectTool, ServiceRecvTool,
                     ServiceSendTool, ShellTool, ToolProfile, WriteFileTool)
 
@@ -72,6 +73,12 @@ class Specialist(abc.ABC):
             lines.append(f"This challenge requires {challenge.flags_required} flags.")
         if available:
             lines.append("Installed tools detected here: " + ", ".join(sorted(available)) + ".")
+        notes = primer(self.profile().name,
+                       hint=" ".join([challenge.name, challenge.category,
+                                      challenge.description] + [p.name for p in files]),
+                       max_chars=Limits.from_env().primer_chars)
+        if notes:
+            lines.append(notes)
         lines.append("Find the flag.")
         return "\n".join(lines)
 

@@ -511,6 +511,57 @@ class Solver:
         self.state.note(f"compacted conversation (-{dropped} messages)")
 
 
+_RECAP_ASK = (
+    "This attempt is being stopped and will restart with a clean context: you "
+    "will lose everything above. Write the handover note your next attempt starts "
+    "from. Plain text, under 300 words, no tool calls:\n"
+    "1. Facts established, with exact values (file types, protections, versions, "
+    "addresses, offsets, credentials, endpoints, keys).\n"
+    "2. What was tried and why each approach failed.\n"
+    "3. The most promising next approach that is DIFFERENT from what failed.\n"
+    "Do not write a flag unless it appeared in tool output.")
+
+
+def restart_recap(model: Model, state: SolverState, tools: list[dict], budget: Budget,
+                  log: RunLog, limits: Limits | None = None) -> str:
+    """The note that seeds a clean-context restart. The model writes it from the
+    full transcript it is about to lose (one call); if that fails or comes back
+    empty, a mechanical list of the commands already run is used instead. Without
+    this a restart begins from nothing and repeats the first attempt."""
+    limits = limits or Limits.from_env()
+    cid = state.challenge_id
+    note = ""
+    t0 = time.monotonic()
+    try:
+        # Tools are passed because some backends reject a transcript containing
+        # tool calls when none are declared; the prompt asks for text only.
+        resp = model.complete(state.messages + [Message(role="user", content=_RECAP_ASK)],
+                              tools)
+        budget.charge_usage(cid, resp.usage)
+        note = (resp.text or "").strip()[: limits.recap_chars]
+    except ModelError as e:
+        log.event("solver.recap_error", challenge=cid, error=str(e)[:300])
+    finally:
+        budget.charge_time(cid, time.monotonic() - t0)
+    source = "model"
+    if not note:
+        source = "mechanical"
+        actions = [f"- {tc.name}: {_args_text(tc.arguments)[:140]}"
+                   for m in state.messages for tc in m.tool_calls][-25:]
+        note = "Commands already run (most recent last):\n" + "\n".join(actions) \
+            if actions else "No commands were run."
+        if state.notes:
+            note += "\nHarness notes: " + "; ".join(state.notes[-5:])
+    log.event("solver.recap", challenge=cid, source=source, chars=len(note), text=note)
+    found = len(state.store.grounded_flags())
+    return ("(Your earlier attempt was reset to a clean context. This is the handover "
+            "note it left.)\n" + note + "\n"
+            + (f"{found} flag candidate(s) were already found and submitted.\n" if found else "")
+            + "Files you created earlier are still in the working directory, and full "
+            "outputs of earlier commands are under .tool_output/. Do not redo what "
+            "failed: take a different approach.")
+
+
 def _args_text(arguments: dict) -> str:
     """Tool arguments as one line: the bare command for the common single-string
     case, compact JSON otherwise."""

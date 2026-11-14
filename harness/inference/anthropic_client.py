@@ -36,7 +36,8 @@ class AnthropicModel(Model):
             import anthropic  # noqa: F401
         except ImportError as e:  # pragma: no cover
             raise ModelError("anthropic SDK not installed; `pip install anthropic`") from e
-        kwargs = {}
+        kwargs = {"max_retries": 1,
+                  "timeout": float(os.environ.get("CTF_MODEL_TIMEOUT") or 300)}
         if self._api_key:
             kwargs["api_key"] = self._api_key
         if self._base_url:

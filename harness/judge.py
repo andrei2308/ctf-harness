@@ -209,12 +209,60 @@ def _print(report: dict) -> None:
         print("  LLM diagnosis:\n    " + d.replace("\n", "\n    "))
 
 
+def print_transcript(log_path: str | Path, challenge: str | None = None, out=None) -> int:
+    """Replay what the agent did, turn by turn: its text, each command, and a
+    capped excerpt of each result. Returns the number of events shown."""
+    out = out or sys.stdout
+    shown = 0
+    for ev in _events(Path(log_path)):
+        c = ev.get("challenge")
+        if challenge and c != challenge:
+            continue
+        kind = ev.get("kind", "")
+        tag = f"[{c}] " if c and not challenge else ""
+        if kind == "attempt.start":
+            line = f"=== attempt: {ev.get('spec')} (rung effort {ev.get('rung')})"
+        elif kind == "attempt.end":
+            line = f"=== end: {ev.get('outcome')} — {ev.get('reason')}"
+        elif kind == "solver.plan":
+            line = "PLAN  " + str(ev.get("text", "")).strip()
+        elif kind == "model.turn":
+            line = (f"MODEL #{ev.get('iter')} ({ev.get('tokens_in')} in / "
+                    f"{ev.get('tokens_out')} out, {ev.get('seconds')}s)  "
+                    + str(ev.get("text", "")).strip())
+        elif kind == "tool.call":
+            line = f"  $ {ev.get('tool')}: {ev.get('args')}"
+        elif kind == "tool.observe":
+            head = f"    -> {ev.get('bytes')} bytes, exit {ev.get('exit_code')}, {ev.get('seconds')}s"
+            if ev.get("error"):
+                head += f", error: {ev['error']}"
+            body = str(ev.get("output", "")).rstrip()
+            line = head + ("\n" + "\n".join("       " + ln for ln in body.splitlines())
+                           if body else "")
+        elif kind in ("flag.candidate", "flag.submit", "flag.submit_error",
+                      "solver.stuck_nudge", "solver.model_retry",
+                      "challenge.top_rung_restart", "challenge.fresh_context",
+                      "challenge.budget_stop", "challenge.done"):
+            extra = {k: v for k, v in ev.items() if k not in ("seq", "t", "kind", "challenge")}
+            line = f"* {kind} {json.dumps(extra, ensure_ascii=False)}"
+        else:
+            continue
+        print(tag + line, file=out)
+        shown += 1
+    return shown
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="harness.judge", description="Analyse a run log")
     p.add_argument("log", help="path to a run-<id>.jsonl log")
+    p.add_argument("--transcript", nargs="?", const="", default=None, metavar="CHALLENGE",
+                   help="print the turn-by-turn transcript (optionally for one challenge) and exit")
     p.add_argument("--llm", action="store_true", help="add a model diagnosis of the worst failures")
     p.add_argument("--backend", default="openai")
     a = p.parse_args(argv if argv is not None else sys.argv[1:])
+    if a.transcript is not None:
+        print_transcript(a.log, a.transcript or None)
+        return 0
     report = analyze_run(a.log)
     if a.llm:
         from .config import config_from_env

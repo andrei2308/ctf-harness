@@ -141,7 +141,8 @@ RUN pip install -e ".[openai,anthropic,dev]"
 # Image defaults: talk to an OpenAI-compatible endpoint (OPENAI_BASE_URL /
 # OPENAI_API_KEY from the run environment). Set CTF_FAST_MODEL and CTF_PLATFORM
 # here once the organizers publish the model id and the starter-kit interface.
-ENV CTF_BACKEND=openai
+ENV CTF_BACKEND=openai \
+    CTF_LOG_MIRROR=1
 # Offline knowledge base the `knowledge` tool greps (the web-search substitute).
 # `knowledge/` is copied in above; drop your ctf-notes there before building
 # (cp -r ../ctf-notes/* knowledge/) for the biggest gain.

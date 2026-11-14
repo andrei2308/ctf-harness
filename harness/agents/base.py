@@ -15,19 +15,23 @@ SolverState with a higher rung's model.
 
 from __future__ import annotations
 
+import json
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 
 from ..flags.grounding import (EvidenceStore, GroundedFlag, flag_pattern,
                                verify_candidate)
-from ..flags.submit import FlagSubmitter
+from ..flags.submit import FlagSubmitter, _preview
 from ..inference.base import (ContextOverflow, Message, Model, ModelError)
 from ..scheduler.budget import Budget, BudgetExceeded
 from ..telemetry.run_log import RunLog
+from .limits import Limits
 from .tools import ToolContext, ToolProfile, ToolResult
+
+_TRIM_MARK = "[older output trimmed to save tokens]"
 
 
 # Waits between retries of a failed model call (rate limit, 5xx, overload). The
@@ -65,6 +69,7 @@ class SolverState:
     store: EvidenceStore
     ctx: ToolContext
     iters_done: int = 0
+    saved_outputs: int = 0         # oversized tool outputs written to .tool_output/
     notes: list[str] = field(default_factory=list)
     planned: bool = False          # a planning step has run for this challenge
 
@@ -100,7 +105,12 @@ class Solver:
     def __init__(self, *, model: Model, profile: ToolProfile, state: SolverState,
                  budget: Budget, log: RunLog, submitter: FlagSubmitter,
                  max_iterations: int = 40, stuck_patience: int = 6,
-                 stuck_dup_threshold: int = 3, plan_first: bool = True):
+                 stuck_dup_threshold: int = 3, plan_first: bool = True,
+                 limits: Limits | None = None):
+        self.limits = limits or Limits.from_env()
+        # Tools ask this for their timeout, so none can outrun the time budget.
+        state.ctx.max_timeout = self.limits.max_tool_seconds
+        state.ctx.time_left = self._tool_time_left
         self.model = model
         self.profile = profile
         self.state = state
@@ -144,16 +154,20 @@ class Solver:
             "first, the most likely vulnerability/technique for this challenge, and "
             "which tools you will use. If unsure of the type, say how you'll "
             "identify it. Keep it short; then begin executing.")))
+        t0 = time.monotonic()
         try:
             resp = self.model.complete(self.state.messages, [])   # planning: no tools
         except (ModelError, ContextOverflow):
             self.state.planned = True
             return
+        finally:
+            self.budget.charge_time(cid, time.monotonic() - t0)
         self.budget.charge_usage(cid, resp.usage)
         self.state.messages.append(Message(role="assistant",
                                            content=resp.text or "(no plan produced)"))
         self.state.planned = True
-        self.log.event("solver.plan", challenge=cid, chars=len(resp.text or ""))
+        self.log.event("solver.plan", challenge=cid, chars=len(resp.text or ""),
+                       text=self._for_log(resp.text or ""))
 
     def _handle_tool_call(self, tc) -> Message:
         # Track repeated actions for stuck detection: a repeated (tool, args)
@@ -162,7 +176,12 @@ class Solver:
         self._dup_hits = self._dup_hits + 1 if sig in self._recent_sigs else 0
         self._recent_sigs.append(sig)
 
+        cid = self.state.challenge_id
+        # Logged BEFORE it runs, so a run killed mid-tool still shows what hung.
+        self.log.event("tool.call", challenge=cid, tool=tc.name,
+                       args=self._for_log(_args_text(tc.arguments)))
         tool = self._tools.get(tc.name)
+        t0 = time.monotonic()
         if tool is None:
             res = ToolResult(tc.name, b"", f"{tc.name}:unknown",
                              error=f"no such tool: {tc.name}")
@@ -171,17 +190,74 @@ class Solver:
                 res = tool.run(tc.arguments, self.state.ctx)
             except Exception as e:  # noqa: BLE001 - a tool bug must not kill the attempt
                 res = ToolResult(tc.name, b"", f"{tc.name}:exception", error=repr(e))
+        took = time.monotonic() - t0
+        self.budget.charge_time(cid, took)
 
         # Record REAL output as evidence and stream any grounded flag now.
         # Reference material (knowledge base, summaries) is NOT evidence: an
         # example CTF{...} in a writeup must never ground.
         newly = (self.state.store.record(res.source, res.output)
                  if res.output and res.is_evidence else [])
-        self.log.observe(self.state.challenge_id, res.name, len(res.output), res.truncated)
+        limit = self.limits.tool_output_bytes
+        cut = len(res.output) > limit
+        text = res.as_text(limit)
+        if cut:
+            saved = self._save_output(res.output)
+            if saved:
+                text += (f"\n[full output saved to {saved} — search it with grep/sed "
+                         "instead of re-running the command]")
+        self.log.observe(cid, res.name, len(res.output), cut, exit_code=res.exit_code,
+                         error=res.error, seconds=round(took, 2),
+                         output=self._for_log(res.output.decode("utf-8", "replace")))
         if newly:
             self._submit_grounded(newly)
-        return Message(role="tool", content=res.as_text(),
-                       tool_call_id=tc.id, name=tc.name)
+        return Message(role="tool", content=text, tool_call_id=tc.id, name=tc.name)
+
+    def _save_output(self, data: bytes) -> str | None:
+        """Keep an oversized tool output on disk so the model can search it."""
+        try:
+            d = self.state.ctx.work_dir / ".tool_output"
+            d.mkdir(exist_ok=True)
+            self.state.saved_outputs += 1
+            path = d / f"{self.state.saved_outputs:04d}.txt"
+            path.write_bytes(data)
+            return f".tool_output/{path.name}"
+        except OSError:
+            return None
+
+    def _tool_time_left(self) -> float | None:
+        left = self.budget.time_left(self.state.challenge_id)
+        return None if left is None else max(0.0, left - self.limits.reserve_seconds)
+
+    def _for_log(self, text: str) -> str:
+        """A capped excerpt for the run log, with flags reduced to a preview (the
+        log is reviewed; it shows the format, not the secret)."""
+        cap = self.limits.log_text_chars
+        if len(text) > cap:
+            text = (text[: cap * 3 // 4] + f" …[{len(text)} chars]… " + text[-(cap // 4):])
+        for claim in sorted(self.state.store.claims_in(text), key=len, reverse=True):
+            text = text.replace(claim, _preview(claim))
+        return text
+
+    def _diet(self) -> None:
+        """Keep the transcript small before each model call. Every message is
+        re-sent on every turn, so old tool output is the main token sink: past
+        the soft size, results older than the newest few are cut to a stub; past
+        the hard size, the middle of the transcript is dropped."""
+        lim = self.limits
+        msgs = self.state.messages
+        if sum(len(m.content) for m in msgs) <= lim.history_soft_chars:
+            return
+        tool_idx = [i for i, m in enumerate(msgs) if m.role == "tool"]
+        old = tool_idx[:-lim.keep_recent_results] if lim.keep_recent_results else tool_idx
+        keep = lim.old_result_chars
+        for i in old:
+            c = msgs[i].content
+            if len(c) > keep + len(_TRIM_MARK) + 8 and not c.endswith(_TRIM_MARK):
+                msgs[i] = replace(msgs[i], content=(
+                    c[: keep * 2 // 3] + "\n…\n" + c[-(keep // 3):] + "\n" + _TRIM_MARK))
+        if sum(len(m.content) for m in msgs) > lim.history_hard_chars:
+            self._compact()
 
     def run(self) -> SolveOutcome:
         cid = self.state.challenge_id
@@ -259,6 +335,8 @@ class Solver:
 
             iters += 1
             self.state.iters_done += 1
+            self._diet()
+            t0 = time.monotonic()
             try:
                 resp = self._call_model()
             except ContextOverflow:
@@ -269,8 +347,15 @@ class Solver:
                 self.log.attempt_end(cid, Outcome.ERROR.value, f"model error: {e}")
                 return SolveOutcome(Outcome.ERROR, cid, f"model error: {e}",
                                     grounded_any, self.state.iters_done)
+            finally:
+                self.budget.charge_time(cid, time.monotonic() - t0)
 
             self.budget.charge_usage(cid, resp.usage)
+            self.log.event("model.turn", challenge=cid, iter=self.state.iters_done,
+                           text=self._for_log(resp.text or ""),
+                           calls=[tc.name for tc in resp.tool_calls],
+                           tokens_in=resp.usage.input, tokens_out=resp.usage.output,
+                           seconds=round(time.monotonic() - t0, 2))
 
             if resp.wants_tools:
                 prose_turns = 0
@@ -403,7 +488,37 @@ class Solver:
             return
         tail = msgs[cut:]
         dropped = len(msgs) - len(head) - len(tail)
+        # A digest of what was already run, built without a model call, so the
+        # model does not redo work it can no longer see.
+        # Lines from an earlier digest are carried forward, so repeated
+        # compaction does not forget the oldest actions.
+        actions: list[str] = []
+        for m in msgs[2:cut]:
+            if m.role == "user" and "elided to fit context" in m.content:
+                actions += [ln for ln in m.content.splitlines() if ln.startswith("- ")]
+            actions += [f"- {tc.name}: {_args_text(tc.arguments)[:140]}"
+                        for tc in m.tool_calls]
+        digest = ""
+        if actions:
+            shown = actions[-40:]
+            digest = ("\nActions already taken in the elided part (oldest first"
+                      + (f", last {len(shown)} of {len(actions)}" if len(shown) < len(actions) else "")
+                      + "); do not repeat them without a new reason:\n" + "\n".join(shown))
         self.state.messages = head + [Message(
-            role="user", content=f"[{dropped} earlier messages elided to fit context]")
+            role="user",
+            content=f"[{dropped} earlier messages elided to fit context]{digest}")
         ] + tail
         self.state.note(f"compacted conversation (-{dropped} messages)")
+
+
+def _args_text(arguments: dict) -> str:
+    """Tool arguments as one line: the bare command for the common single-string
+    case, compact JSON otherwise."""
+    if len(arguments) == 1:
+        (value,) = arguments.values()
+        if isinstance(value, str):
+            return value
+    try:
+        return json.dumps(arguments, ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return repr(arguments)

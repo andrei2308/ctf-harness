@@ -130,6 +130,18 @@ class Budget:
             return None
         return max(0.0, self.caps.total_seconds - (time.monotonic() - self._started))
 
+    def time_left(self, challenge: str) -> float | None:
+        """Seconds this challenge may still spend: the tighter of the global
+        wall-clock cap and its per-challenge slice. None when neither is set."""
+        left = self.seconds_left()
+        with self._lock:
+            cap = self.caps.per_challenge_seconds
+            if cap:
+                used = self._per_chal.get(challenge, _Counter()).seconds
+                own = max(0.0, cap - used)
+                left = own if left is None else min(left, own)
+        return left
+
     def attempt_remaining(self, challenge: str) -> tuple[float, float]:
         """(token_fraction_left, second_fraction_left) for the current attempt
         slice, each in [0, 1]. The scheduler parks when either nears 0. Returns

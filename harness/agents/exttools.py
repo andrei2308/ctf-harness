@@ -129,7 +129,7 @@ class GdbTool(Tool):
             parts += ["-ex", str(c)]
         parts.append(binary)
         cmd = " ".join(shlex.quote(p) for p in parts)
-        timeout = float(args.get("timeout") or ctx.default_timeout)
+        timeout = ctx.clamp(args.get("timeout"))
         out, code = ctx.executor.run(cmd, ctx.work_dir, timeout)
         if code == 127:
             return ToolResult(self.name, out, "gdb:missing",
@@ -195,7 +195,7 @@ class GhidraDecompileTool(Tool):
             parts.append(func)
         parts.append("-deleteProject")
         cmd = " ".join(shlex.quote(p) for p in parts)
-        timeout = float(args.get("timeout") or max(ctx.default_timeout, 300.0))
+        timeout = ctx.clamp(args.get("timeout"), max(ctx.default_timeout, 300.0))
         out, code = ctx.executor.run(cmd, ctx.work_dir, timeout)
         if code == 127:
             return ToolResult(self.name, out, "ghidra:missing",
@@ -235,7 +235,7 @@ class VolatilityTool(Tool):
                 f'elif command -v vol.py >/dev/null 2>&1; then '
                 f'vol.py -q -f {shlex.quote(image)} {shlex.quote(plugin)} {extra}; '
                 f'else echo "__NO_VOLATILITY__"; exit 127; fi')
-        timeout = float(args.get("timeout") or max(ctx.default_timeout, 120.0))
+        timeout = ctx.clamp(args.get("timeout"), max(ctx.default_timeout, 120.0))
         out, code = ctx.executor.run(base, ctx.work_dir, timeout)
         if code == 127 or b"__NO_VOLATILITY__" in out:
             return ToolResult(self.name, b"", "vol:missing",
@@ -378,7 +378,7 @@ class InteractiveGdbTool(Tool):
             if not cmd:
                 return ToolResult(self.name, b"", "gdb_session:args", error="cmd required")
             try:
-                out = sess.send(cmd, timeout=float(args.get("timeout") or 30.0))
+                out = sess.send(cmd, timeout=ctx.clamp(args.get("timeout"), 30.0))
             except OSError as e:
                 return ToolResult(self.name, b"", "gdb_session:fail", error=str(e))
             return ToolResult(self.name, out, f"gdb_session:{cmd[:40]}",

@@ -6,7 +6,7 @@ per-category specialist, which works it through a tool loop behind a hard
 flag-grounding guard, streams flags the instant they verify, and logs everything
 for the between-run dev loop.
 
-It runs today, fully offline (**78 passing tests**, no network, no credentials),
+It runs today, fully offline (**94 passing tests**, no network, no credentials),
 behind two swappable interfaces (`Platform`, `Model`) so the remaining organizer
 unknowns don't block anything — you drop real values in as they land.
 
@@ -61,7 +61,7 @@ scripts/         convert_benchmark.py (CTFTiny/NYU/InterCode -> suite layout)
 Dockerfile       Kali-based submission image: harness + full CTF toolset
 BENCHMARKS.md    How to run/convert benchmarks and read the judge report
 fixtures/        Self-contained demo challenges for the offline rig
-tests/           pytest (78): grounding, budget, submit, solver, routing, tools, e2e, review regressions
+tests/           pytest (94): grounding, budget, submit, solver, routing, tools, e2e, review regressions
 ```
 
 ## Quickstart (offline, no network, no credentials)
@@ -88,6 +88,7 @@ python -m harness.bench --fixtures <suite> --backend openai --concurrency 4
 
 # Between-run learning: analyze a run log
 python -m harness.judge runs/logs/run-<id>.jsonl
+python -m harness.judge runs/logs/run-<id>.jsonl --transcript [challenge]   # what it actually did
 ```
 
 `single` escalates effort up the ladder within one per-run budget, then keeps
@@ -188,8 +189,17 @@ Agents, D-CIPHER, harness-engineering surveys):
 - **Offline knowledge base + `knowledge` tool** — web access ~doubles solve rate
   and is forbidden here, so every specialist greps a baked-in base (your
   `ctf-notes` + cheatsheets) for the known technique. Output is non-evidence.
-- **Output summarizer** — large tool output is shown as head + lines-of-interest +
-  tail (heuristic, zero extra tokens); full bytes still reach the evidence store.
+- **Output summarizer** — tool output over `CTF_TOOL_OUTPUT_BYTES` (default 8 KB)
+  is shown as head + lines-of-interest + tail (heuristic, zero extra tokens); the
+  full bytes still reach the evidence store and are saved under `.tool_output/`
+  for the agent to grep.
+- **History diet** — every message is re-sent each turn, so once the transcript
+  passes `CTF_HISTORY_SOFT_CHARS` old tool results shrink to a stub, and past
+  `CTF_HISTORY_HARD_CHARS` the middle is replaced by a digest of the actions taken
+  (before the endpoint rejects the request). Knobs in `agents/limits.py`.
+- **Transcript log** — each model turn, command and capped result excerpt is in the
+  JSONL log (flags shown as previews only); `CTF_LOG_MIRROR=1` (image default)
+  also streams it to stderr.
 - **Stuck-loop detection** — repeated actions / no-new-evidence stalls get one
   nudge, then bail to STALLED so the ladder escalates instead of spinning.
 - **Planning step** — one upfront no-tool plan per challenge (`plan_first`), the
@@ -213,7 +223,11 @@ Defaults in `config.py`:
 
 - **Model** (Q1): `inference_backend`, `fast_model`, `strong_model`, ladder rungs.
 - **Budgets** (Q2): `caps` (`total_*`, `per_challenge_*`, `per_attempt_*`,
-  `count_cached_input`); also via `CTF_*` env vars.
+  `count_cached_input`); also via `CTF_*` env vars. Set `CTF_TOTAL_SECONDS` a
+  little under the organizers' limit: tool timeouts are clamped to the time left
+  minus `CTF_RESERVE_SECONDS` (default 20). `CTF_MAX_OUTPUT_TOKENS` clamps the
+  ladder's per-response `max_tokens`; `CTF_MODEL_TIMEOUT` (default 300 s) bounds
+  one model request.
 - **Concurrency** (Q3): `concurrency`; `slots_per_challenge` noted for parallel
   best-of-N if permitted.
 - **Platform** (Q4): `platform=files|benchmark|mcp`, `contest_id`.

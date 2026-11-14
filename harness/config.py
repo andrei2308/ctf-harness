@@ -8,13 +8,13 @@ handoff). Nothing here reads a secret from disk; credentials come from env.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from .agents.tools import Executor, LocalExecutor
 from .inference.base import Model, ModelSpec
 from .scheduler.budget import Caps
-from .scheduler.ladder import Ladder, default_ladder
+from .scheduler.ladder import Ladder, Rung, default_ladder
 
 
 @dataclass
@@ -60,9 +60,21 @@ class Config:
     # Production (one challenge per container): after the ladder is climbed,
     # how many clean-context restarts of the top rung to spend remaining budget on.
     top_rung_restarts: int = 6
+    # Also write every log event to stderr (the container's output stream is what
+    # comes back from a contest run; the log file may not).
+    log_mirror: bool = False
+    # Clamp every rung's per-response max_tokens. The upper rungs ask for 16k/32k;
+    # an endpoint whose context or output limit is smaller rejects that request
+    # outright. Set once the organizers' model limits are known.
+    max_output_tokens: int | None = None
 
     def ladder(self) -> Ladder:
-        return default_ladder(self.fast_model, self.strong_model)
+        ladder = default_ladder(self.fast_model, self.strong_model)
+        cap = self.max_output_tokens
+        if cap:
+            ladder = Ladder([Rung(replace(r.spec, max_tokens=min(r.spec.max_tokens, cap)),
+                                  r.max_iterations) for r in ladder.rungs])
+        return ladder
 
     def executor(self) -> Executor:
         return LocalExecutor()
@@ -149,4 +161,6 @@ def config_from_env() -> Config:
         dry_run=os.environ.get("CTF_DRY_RUN", "").lower() in ("1", "true", "yes"),
         penalize_wrong=os.environ.get("CTF_PENALIZE_WRONG", "").lower() in ("1", "true", "yes"),
         top_rung_restarts=_int("CTF_TOP_RUNG_RESTARTS", 6),
+        log_mirror=os.environ.get("CTF_LOG_MIRROR", "").lower() in ("1", "true", "yes"),
+        max_output_tokens=_opt_int("CTF_MAX_OUTPUT_TOKENS"),
     )

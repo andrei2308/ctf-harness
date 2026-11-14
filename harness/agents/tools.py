@@ -23,14 +23,19 @@ from __future__ import annotations
 import abc
 import os
 import re
+import signal
 import socket
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 from ..platforms.base import ConnInfo
 
-MAX_TOOL_OUTPUT = 64 * 1024  # bytes fed back to the model per call (evidence store keeps more)
+# Default bytes of one result fed back to the model (the evidence store keeps
+# everything). Every result is re-sent on every later turn, so this is the single
+# biggest lever on token spend. Tune with CTF_TOOL_OUTPUT_BYTES (agents/limits.py).
+MAX_TOOL_OUTPUT = 8 * 1024
 
 
 # Lines worth keeping when summarising long output: flags, secrets, errors,
@@ -43,29 +48,32 @@ _INTEREST_RE = re.compile(
 
 def summarize_output(data: bytes, limit: int) -> str:
     """Model-facing view of tool output. Small output passes through; large output
-    becomes head + lines-of-interest + tail, so signal survives without spending
-    the token budget on a wall of bytes. The FULL bytes still go to the evidence
+    becomes head + lines-of-interest from the elided middle + tail, sized so the
+    whole view stays close to `limit`. The FULL bytes still go to the evidence
     store, so grounding never loses a flag this trims."""
     text = data.decode("utf-8", "replace")
     if len(data) <= limit:
         return text
-    head = text[: limit // 2]
-    tail = text[-(limit // 4):]
+    head_n, tail_n, mid_budget = limit * 45 // 100, limit * 25 // 100, limit * 30 // 100
+    head, tail = text[:head_n], text[-tail_n:]
     seen: set[str] = set()
     interesting: list[str] = []
-    for ln in text.splitlines():
+    used = 0
+    for ln in text[head_n:len(text) - tail_n].splitlines():
         s = ln.strip()
         if s and s not in seen and _INTEREST_RE.search(s):
             seen.add(s)
-            interesting.append(ln[:400])
-            if len(interesting) >= 50:
+            ln = ln[:200]
+            if used + len(ln) + 1 > mid_budget:
                 break
+            interesting.append(ln)
+            used += len(ln) + 1
     mid = ("\n".join(interesting)
            if interesting else "(no lines matched the interest filter)")
     return (f"{head}\n"
             f"…[{len(data)} bytes total; middle elided — lines of interest:]\n"
             f"{mid}\n"
-            f"…[tail {limit // 4} bytes:]\n{tail}")
+            f"…[tail {tail_n} bytes:]\n{tail}")
 
 
 @dataclass
@@ -116,7 +124,7 @@ class LocalExecutor(Executor):
 
     def run(self, cmd: str, cwd: Path, timeout: float) -> tuple[bytes, int]:
         try:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 # Not a login shell: `-l` sources /etc/profile, which on Debian
                 # and Kali resets PATH (dropping the image's venv and tool dirs),
                 # and ~/.profile, which with HOME=cwd is a file in the untrusted
@@ -136,14 +144,29 @@ class LocalExecutor(Executor):
                     "DEBIAN_FRONTEND": "noninteractive",
                     **self._env,
                 },
-                capture_output=True,
-                timeout=timeout,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 stdin=subprocess.DEVNULL,
+                # Own process group, so a timeout can kill everything the command
+                # spawned. Otherwise a timed-out hashcat/angr keeps burning CPU
+                # for the rest of the run.
+                start_new_session=True,
             )
-            return proc.stdout + proc.stderr, proc.returncode
-        except subprocess.TimeoutExpired as e:
-            partial = (e.stdout or b"") + (e.stderr or b"")
-            return partial + f"\n[timed out after {timeout}s]".encode(), 124
+        except OSError as e:
+            return f"[could not start shell: {e}]".encode(), 126
+        try:
+            out, err = proc.communicate(timeout=timeout)
+            return out + err, proc.returncode
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                proc.kill()
+            try:
+                out, err = proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                out, err = b"", b""
+            return out + err + f"\n[timed out after {timeout:g}s]".encode(), 124
 
 
 # --------------------------------------------------------------------------- #
@@ -159,9 +182,29 @@ class ToolContext:
     executor: Executor
     conn: ConnInfo | None = None       # the only network endpoint tools may reach
     default_timeout: float = 30.0
+    # Ceiling on one tool call, and a callback giving the seconds this challenge
+    # may still spend on a tool (None = no time cap). Set by the solver, so no
+    # tool can run past the budget whatever timeout the model asks for.
+    max_timeout: float = 900.0
+    time_left: Callable[[], float | None] | None = None
     # Live service sessions, keyed by name, persisted across tool calls so an
     # interactive agent can send/recv over one connection.
     sessions: dict = field(default_factory=dict)
+
+    def clamp(self, requested: float | None, default: float | None = None) -> float:
+        """The timeout a tool should actually use: what was asked for (or the
+        default), capped by max_timeout and by the time budget left."""
+        try:
+            t = float(requested) if requested else 0.0
+        except (TypeError, ValueError):
+            t = 0.0
+        if t <= 0:
+            t = default if default is not None else self.default_timeout
+        t = min(t, self.max_timeout)
+        left = self.time_left() if self.time_left else None
+        if left is not None:
+            t = min(t, left)
+        return max(1.0, t)
 
 
 class Tool(abc.ABC):
@@ -207,7 +250,7 @@ class ShellTool(Tool):
         cmd = str(args.get("cmd", "")).strip()
         if not cmd:
             return ToolResult(self.name, b"", "shell:empty", error="empty command")
-        timeout = float(args.get("timeout") or ctx.default_timeout)
+        timeout = ctx.clamp(args.get("timeout"))
         out, code = ctx.executor.run(cmd, ctx.work_dir, timeout)
         truncated = len(out) > MAX_TOOL_OUTPUT
         label = f"shell:{cmd[:60]}"
@@ -237,7 +280,7 @@ class ServiceConnectTool(Tool):
         if sess is not None and not getattr(sess, "_closed", True):
             return ToolResult(self.name, b"", "connect:reuse",
                               meta={"host": ctx.conn.host, "port": ctx.conn.port})
-        timeout = float(args.get("timeout") or ctx.default_timeout)
+        timeout = ctx.clamp(args.get("timeout"))
         try:
             sock = socket.create_connection((ctx.conn.host, ctx.conn.port), timeout=timeout)
         except OSError as e:
@@ -266,7 +309,7 @@ class ServiceSendTool(Tool):
         payload = _unescape(str(args.get("data", "")))
         if args.get("newline", True):
             payload += b"\n"
-        timeout = float(args.get("recv_timeout") or 5.0)
+        timeout = ctx.clamp(args.get("recv_timeout"), 5.0)
         try:
             sess.send(payload)
             reply = sess.recv(timeout=timeout)
@@ -286,7 +329,7 @@ class ServiceRecvTool(Tool):
         sess = ctx.sessions.get("svc")
         if sess is None or getattr(sess, "_closed", True):
             return ToolResult(self.name, b"", "recv:noconn", error="not connected")
-        timeout = float(args.get("recv_timeout") or 5.0)
+        timeout = ctx.clamp(args.get("recv_timeout"), 5.0)
         try:
             data = sess.recv(timeout=timeout)
         except OSError as e:
@@ -328,7 +371,7 @@ class HttpTool(Tool):
         method = str(args.get("method", "GET")).upper()
         try:
             resp = requests.request(method, url, headers=args.get("headers") or {},
-                                    data=args.get("body"), timeout=ctx.default_timeout,
+                                    data=args.get("body"), timeout=ctx.clamp(None),
                                     allow_redirects=True)
         except Exception as e:  # noqa: BLE001 - surface any client error to the agent
             return ToolResult(self.name, b"", "http:fail", error=str(e))

@@ -20,6 +20,21 @@ from .base import (ContextOverflow, Effort, Message, Model, ModelError,
 _EFFORT_STR = {Effort.LOW: "low", Effort.MEDIUM: "medium", Effort.HIGH: "high", Effort.MAX: "high"}
 
 
+_OVERFLOW_PHRASES = (
+    "context length", "context_length", "context window", "maximum context",
+    "too long", "too many tokens", "reduce the length", "exceeds the model",
+    "max_tokens", "maximum input length",
+)
+
+
+def is_context_overflow(error_text: str) -> bool:
+    """Does this endpoint error mean the request was too big? Matched on specific
+    phrases: a bare "context" also appears in unrelated errors ("context deadline
+    exceeded" from a proxy), and compacting on those throws history away."""
+    msg = error_text.lower()
+    return any(p in msg for p in _OVERFLOW_PHRASES)
+
+
 def _raw_args(arguments: dict):
     """Arguments exactly as the model sent them: unparseable JSON was kept under
     `_raw`, so echo that string back rather than a wrapper it never wrote."""
@@ -44,7 +59,10 @@ class OpenAIModel(Model):
             import openai  # noqa: F401
         except ImportError as e:  # pragma: no cover
             raise ModelError("openai SDK not installed; `pip install openai`") from e
-        kwargs = {"api_key": self._api_key}
+        # One request must not hang a slot: the SDK default is 10 minutes with
+        # its own retries on top. The solver does the backing off.
+        kwargs = {"api_key": self._api_key, "max_retries": 1,
+                  "timeout": float(os.environ.get("CTF_MODEL_TIMEOUT") or 300)}
         if self._base_url:
             kwargs["base_url"] = self._base_url
         self._client = openai.OpenAI(**kwargs)
@@ -108,8 +126,7 @@ class OpenAIModel(Model):
         try:
             resp = client.chat.completions.create(**kwargs)
         except Exception as e:  # pragma: no cover
-            msg = str(e).lower()
-            if "context" in msg or "maximum context" in msg or "too long" in msg:
+            if is_context_overflow(str(e)):
                 raise ContextOverflow(str(e)) from e
             raise ModelError(str(e)) from e
 

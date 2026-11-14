@@ -163,6 +163,9 @@ def run_challenge(*, challenge: Challenge, platform: Platform, ladder: Ladder,
         else:
             break
 
+    # Last chance for a flag that never reached the grader.
+    if submitter.pending_count(cid):
+        submitter.flush_pending(cid)
     solved = submitter.is_solved(cid)
     log.event("challenge.done", challenge=cid, solved=solved, attempts=attempts,
               top_rung=rung, reason=reason)
@@ -173,7 +176,7 @@ def run_challenge(*, challenge: Challenge, platform: Platform, ladder: Ladder,
 
 def solve_one(config: Config, challenge_id: str | None = None) -> dict:
     """Wire the harness for a single challenge and solve it. Returns a summary."""
-    log = RunLog(config.run_dir)
+    log = RunLog(config.run_dir, mirror=config.log_mirror)
     platform = make_platform(config)
     budget = Budget(config.caps)
     submitter = FlagSubmitter(platform, log, dry_run=config.dry_run,

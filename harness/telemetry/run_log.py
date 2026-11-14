@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 import time
 from dataclasses import asdict, is_dataclass
@@ -74,7 +75,12 @@ class RunLog:
     killed run (budget/time limit hit mid-attempt) still leaves a complete tail.
     """
 
-    def __init__(self, run_dir: str | os.PathLike, run_id: str | None = None):
+    def __init__(self, run_dir: str | os.PathLike, run_id: str | None = None,
+                 mirror: bool = False):
+        # mirror=True also writes every event to stderr. In the contest the
+        # container's filesystem may not come back, but its output stream does;
+        # stdout stays free for the final JSON summary.
+        self._mirror = mirror
         self.run_dir = Path(run_dir)
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.run_id = run_id or time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
@@ -102,6 +108,12 @@ class RunLog:
             line = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
             self._fh.write(line + "\n")
             self._fh.flush()
+            if self._mirror:
+                try:
+                    sys.stderr.write(line + "\n")
+                    sys.stderr.flush()
+                except (OSError, ValueError):
+                    pass
 
     # --- convenience wrappers for the events we query most ------------------
 
@@ -111,11 +123,13 @@ class RunLog:
     def attempt_end(self, challenge: str, outcome: str, reason: str = "") -> None:
         self.event("attempt.end", challenge=challenge, outcome=outcome, reason=reason)
 
-    def observe(self, challenge: str, tool: str, bytes_out: int, truncated: bool = False) -> None:
-        """Record that a tool produced output (size only; the bytes themselves are
-        kept in the attempt's observation store, not the shared log)."""
+    def observe(self, challenge: str, tool: str, bytes_out: int, truncated: bool = False,
+                **extra: Any) -> None:
+        """Record a tool result: its size, plus whatever the caller adds (exit
+        code, seconds, a capped excerpt of the output). The full bytes stay in
+        the attempt's evidence store."""
         self.event("tool.observe", challenge=challenge, tool=tool,
-                   bytes=bytes_out, truncated=truncated)
+                   bytes=bytes_out, truncated=truncated, **extra)
 
     def flag_candidate(self, challenge: str, flag_preview: str, grounded: bool, source: str) -> None:
         self.event("flag.candidate", challenge=challenge,

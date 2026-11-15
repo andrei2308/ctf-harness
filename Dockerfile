@@ -169,7 +169,11 @@ RUN if [ "$WITH_WORDLISTS" = "1" ]; then apt-get update && \
 RUN pip install "openai>=1.40" "anthropic>=0.40" "pytest>=8.0" "setuptools>=68" wheel
 WORKDIR /opt/ctf-harness
 COPY . /opt/ctf-harness
-RUN pip install --no-index --no-deps --no-build-isolation -e .
+# Everything after the COPY reruns on every contest-day rebuild, so it must not
+# need the network; --network=none makes the build fail if it ever does. (Do not
+# test this with `docker build --network none`: BuildKit keys every RUN's cache
+# on the network mode, so that build reuses no layers and starts from apt.)
+RUN --network=none pip install --no-index --no-deps --no-build-isolation -e .
 # Contest settings (backend, model id, limits, platform adapter) live in
 # contest.env, copied in above and read at start-up. Edit that file and rebuild;
 # only this last layer reruns. `docker run -e NAME=value` overrides it.
@@ -178,7 +182,7 @@ RUN pip install --no-index --no-deps --no-build-isolation -e .
 # (python scripts/sync_knowledge.py ../ctf-notes) for the biggest gain.
 ENV CTF_KNOWLEDGE_DIR=/opt/ctf-harness/knowledge
 # Convenience: `ctf-tools` prints what the probe sees (sanity-check the build).
-RUN printf '#!/usr/bin/env bash\npython -c "from harness.agents.exttools import probe_tools; from harness.agents.tools import LocalExecutor; from pathlib import Path; print(sorted(probe_tools(LocalExecutor(), Path(\"/tmp\"))))"\n' \
+RUN --network=none printf '#!/usr/bin/env bash\npython -c "from harness.agents.exttools import probe_tools; from harness.agents.tools import LocalExecutor; from pathlib import Path; print(sorted(probe_tools(LocalExecutor(), Path(\"/tmp\"))))"\n' \
       > /usr/local/bin/ctf-tools && chmod +x /usr/local/bin/ctf-tools
 
 # One challenge per container, non-interactive; config from env (model endpoint,

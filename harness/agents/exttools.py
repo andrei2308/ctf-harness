@@ -76,15 +76,18 @@ def probe_tools(ctx_executor, work_dir: Path) -> set[str]:
     run and fed into specialist prompts so the agent only reaches for what exists.
     """
     bins = " ".join(shlex.quote(b) for b in _PROBE_BINARIES)
+    # Imports run in parallel: angr alone takes several seconds to import, and
+    # done one after another the probe could hit its timeout and report tools
+    # that are installed as missing.
     pychecks = "\n".join(
-        f'python3 -c "import {mod}" 2>/dev/null && echo "{name}"'
+        f'( python3 -c "import {mod}" 2>/dev/null && echo "{name}" ) &'
         for name, mod in _PROBE_PYMODULES.items()
     )
     script = (
         f'for t in {bins}; do command -v "$t" >/dev/null 2>&1 && echo "$t"; done\n'
-        f'{pychecks}\n'
+        f'{pychecks}\nwait\n'
     )
-    out, _ = ctx_executor.run(script, work_dir, timeout=30)
+    out, _ = ctx_executor.run(script, work_dir, timeout=120)
     found = {ln.strip() for ln in out.decode("utf-8", "replace").splitlines() if ln.strip()}
     # Normalise a couple of aliases for the prompt.
     if "analyzeHeadless" in found:

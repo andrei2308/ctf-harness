@@ -133,17 +133,21 @@ RUN if [ "$WITH_WORDLISTS" = "1" ]; then apt-get update && \
       ([ -f /usr/share/wordlists/rockyou.txt.gz ] && gunzip -kf /usr/share/wordlists/rockyou.txt.gz || true); fi
 
 # --- the harness ------------------------------------------------------------
+# Its Python dependencies go in their own layer BEFORE the source is copied, so
+# a rebuild after editing contest.env or the platform adapter needs no network
+# and takes seconds. Without the model SDK every model call fails with "SDK not
+# installed". pytest is for the in-image smoke test; setuptools/wheel let the
+# editable install below run without fetching a build backend.
+RUN pip install "openai>=1.40" "anthropic>=0.40" "pytest>=8.0" "setuptools>=68" wheel
 WORKDIR /opt/ctf-harness
 COPY . /opt/ctf-harness
-# The model SDKs are extras, not core deps: without them every model call fails
-# with "SDK not installed". pytest is here for the in-image smoke test.
-RUN pip install -e ".[openai,anthropic,dev]"
+RUN pip install --no-index --no-deps --no-build-isolation -e .
 # Contest settings (backend, model id, limits, platform adapter) live in
 # contest.env, copied in above and read at start-up. Edit that file and rebuild;
 # only this last layer reruns. `docker run -e NAME=value` overrides it.
 # Offline knowledge base the `knowledge` tool greps (the web-search substitute).
-# `knowledge/` is copied in above; drop your ctf-notes there before building
-# (cp -r ../ctf-notes/* knowledge/) for the biggest gain.
+# `knowledge/` is copied in above; sync your ctf-notes into it before building
+# (python scripts/sync_knowledge.py ../ctf-notes) for the biggest gain.
 ENV CTF_KNOWLEDGE_DIR=/opt/ctf-harness/knowledge
 # Convenience: `ctf-tools` prints what the probe sees (sanity-check the build).
 RUN printf '#!/usr/bin/env bash\npython -c "from harness.agents.exttools import probe_tools; from harness.agents.tools import LocalExecutor; from pathlib import Path; print(sorted(probe_tools(LocalExecutor(), Path(\"/tmp\"))))"\n' \

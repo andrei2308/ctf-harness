@@ -67,6 +67,7 @@ tests/           pytest (115): grounding, budget, submit, solver, routing, tools
 > **Start with [HANDOFF.md](HANDOFF.md)**: what you must supply for a run to work,
 > how to check the model endpoint (`python -m harness.preflight`), and what is
 > still unverified.
+> Building and validating the image locally: [CLAUDE_CODE_TASKS.md](CLAUDE_CODE_TASKS.md).
 
 ## Quickstart (offline, no network, no credentials)
 

@@ -29,6 +29,7 @@ from .agents.exttools import probe_tools
 from .agents.specialists import route
 from .agents.tools import ToolContext
 from .config import Config, config_from_env, make_model_factory, make_platform
+from .flags.decoys import known_decoys
 from .flags.submit import FlagSubmitter
 from .platforms.base import Challenge, Platform, PlatformError
 from .scheduler.budget import Budget, BudgetExceeded
@@ -98,7 +99,12 @@ def run_challenge(*, challenge: Challenge, platform: Platform, ladder: Ladder,
     ctx = ToolContext(challenge_id=cid, work_dir=work_dir, executor=executor, conn=conn)
     sys_p = specialist.system_prompt()
     task_p = specialist.task_prompt(challenge, work_dir, conn, files, available=available)
-    state = new_state(cid, work_dir, ctx, system_prompt=sys_p, task_prompt=task_p)
+    # Flag-shaped strings shipped in the harness's own directories are never the
+    # answer in the contest; with the fixtures rig they ARE the answers.
+    decoys = frozenset() if platform.answers_on_disk else known_decoys()
+    state = new_state(cid, work_dir, ctx, system_prompt=sys_p, task_prompt=task_p,
+                      ignore_flags=decoys)
+    log.event("challenge.decoys", challenge=cid, ignored=len(decoys))
     log.event("challenge.prepared", challenge=cid, specialist=specialist.profile().name,
               files=len(files), has_target=conn is not None,
               flags_required=challenge.flags_required)

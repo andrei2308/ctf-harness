@@ -121,6 +121,28 @@ def run(config: Config, model_factory=None) -> list[tuple[str, bool, str]]:
                     [sys_msg, Message("user", "Reply with: ok")], None) else "accepted",
                 "lower CTF_MAX_OUTPUT_TOKENS to what the model allows")
         m.close()
+    def room_to_act():
+        # A task that invites some thinking, at rung 0's output cap. A reasoning
+        # model that spends the cap on hidden thought returns nothing here.
+        r = base.complete([sys_msg, Message("user", (
+            "You are starting a reverse-engineering CTF challenge. The working "
+            "directory holds `chall` (unknown type) and `output.txt`. Think about "
+            "what you need to learn first, then call the shell tool with the ONE "
+            "command that tells you the most."))], _TOOL)
+        cap = ladder.rung(0).spec.max_tokens
+        note = (f"; reasoning model ({r.reasoning_tokens} hidden tokens of {r.usage.output} "
+                f"output, cap {cap})" if r.reasoning_tokens else "")
+        if r.stop_reason == "length" and not r.tool_calls and not (r.text or "").strip():
+            raise ModelError(f"cut off at max_tokens={cap} with nothing produced{note}")
+        if not r.tool_calls:
+            return f"replied in text without a tool call (the solver nudges this){note}"
+        return f"acted within the cap{note}"
+
+    attempt(f"6. the model can act within rung 0's output cap "
+            f"({ladder.rung(0).spec.max_tokens})", room_to_act,
+            "set CTF_MIN_OUTPUT_TOKENS=8192 or higher; the solver also doubles the "
+            "cap after a cut-off turn, but each one wastes a full turn of tokens")
+
     base.close()
     return results
 

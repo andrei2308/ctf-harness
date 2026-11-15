@@ -1,5 +1,8 @@
 # Local validation: instructions for Claude Code
 
+> **Completed 2026-11-15.** Results are in `VALIDATION_REPORT.md`. The next
+> brief is `CLAUDE_CODE_REHEARSAL.md`. Kept for reference.
+
 You are running on Andrei's Kali machine, inside a clone of
 `github.com/andrei2308/ctf-harness` (private). Your job is to build the
 submission image, prove it works from the agent's point of view, fix what is

@@ -73,6 +73,9 @@ class SolverState:
     ctx: ToolContext
     iters_done: int = 0
     saved_outputs: int = 0         # oversized tool outputs written to .tool_output/
+    # Output cap learned the hard way (see Solver._raise_output_cap); carried
+    # across attempts so a later rung does not start below it.
+    output_floor: int = 0
     notes: list[str] = field(default_factory=list)
     planned: bool = False          # a planning step has run for this challenge
 
@@ -93,8 +96,9 @@ class SolverState:
 
 
 def new_state(challenge_id: str, work_dir: Path, ctx: ToolContext,
-              system_prompt: str, task_prompt: str) -> SolverState:
-    store = EvidenceStore(pattern=flag_pattern())
+              system_prompt: str, task_prompt: str,
+              ignore_flags: frozenset[str] = frozenset()) -> SolverState:
+    store = EvidenceStore(pattern=flag_pattern(), ignore=ignore_flags)
     messages = [
         Message(role="system", content=system_prompt),
         Message(role="user", content=task_prompt),
@@ -114,6 +118,8 @@ class Solver:
         # Tools ask this for their timeout, so none can outrun the time budget.
         state.ctx.max_timeout = self.limits.max_tool_seconds
         state.ctx.time_left = self._tool_time_left
+        if state.output_floor > model.spec.max_tokens:
+            model.spec = replace(model.spec, max_tokens=state.output_floor)
         self.model = model
         self.profile = profile
         self.state = state
@@ -215,6 +221,19 @@ class Solver:
         if newly:
             self._submit_grounded(newly)
         return Message(role="tool", content=text, tool_call_id=tc.id, name=tc.name)
+
+    def _raise_output_cap(self) -> None:
+        """A turn was cut off at max_tokens with nothing produced: double the
+        cap for the rest of this challenge (up to the ceiling), instead of
+        paying for the same empty turn again. Without this a reasoning model can
+        burn a whole rung at 4096 tokens a turn and never act."""
+        cur = self.model.spec.max_tokens
+        new = min(self.limits.max_output_tokens, cur * 2)
+        if new > cur:
+            self.model.spec = replace(self.model.spec, max_tokens=new)
+            self.state.output_floor = new
+            self.log.event("solver.output_cap_raised", challenge=self.state.challenge_id,
+                           was=cur, now=new)
 
     def _save_output(self, data: bytes) -> str | None:
         """Keep an oversized tool output on disk so the model can search it."""
@@ -388,7 +407,10 @@ class Solver:
             # That is not the model choosing to talk, so it is not a prose turn,
             # and an empty assistant message is not worth keeping.
             if resp.stop_reason == "length" and not (resp.text or "").strip():
-                self.state.messages.append(Message(role="user", content=_CUT_OFF_NOTE))
+                self._raise_output_cap()
+                last = self.state.messages[-1]
+                if not (last.role == "user" and last.content == _CUT_OFF_NOTE):
+                    self.state.messages.append(Message(role="user", content=_CUT_OFF_NOTE))
                 continue
 
             # No tool call. Either the model is claiming a flag, or it is talking

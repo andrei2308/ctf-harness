@@ -68,12 +68,18 @@ class Config:
     # an endpoint whose context or output limit is smaller rejects that request
     # outright. Set once the organizers' model limits are known.
     max_output_tokens: int | None = None
+    # Floor for every rung's max_tokens. A reasoning model spends output tokens
+    # on hidden thinking, and the low rungs' 4096 can be gone before it acts.
+    min_output_tokens: int | None = None
 
     def ladder(self) -> Ladder:
         ladder = default_ladder(self.fast_model, self.strong_model)
-        cap = self.max_output_tokens
-        if cap:
-            ladder = Ladder([Rung(replace(r.spec, max_tokens=min(r.spec.max_tokens, cap)),
+        floor, cap = self.min_output_tokens, self.max_output_tokens
+        if floor or cap:
+            def fit(n: int) -> int:
+                n = max(n, floor) if floor else n
+                return min(n, cap) if cap else n       # the cap wins over the floor
+            ladder = Ladder([Rung(replace(r.spec, max_tokens=fit(r.spec.max_tokens)),
                                   r.max_iterations) for r in ladder.rungs])
         return ladder
 
@@ -177,4 +183,5 @@ def config_from_env() -> Config:
         top_rung_restarts=_int("CTF_TOP_RUNG_RESTARTS", 6),
         log_mirror=os.environ.get("CTF_LOG_MIRROR", "").lower() in ("1", "true", "yes"),
         max_output_tokens=_opt_int("CTF_MAX_OUTPUT_TOKENS"),
+        min_output_tokens=_opt_int("CTF_MIN_OUTPUT_TOKENS"),
     )

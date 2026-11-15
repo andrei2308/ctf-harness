@@ -1,0 +1,23 @@
+# Contest-day rebuild: today's validated image plus the current source.
+#
+# The full Dockerfile takes about 30 minutes and needs the network unless every
+# layer is still in Docker's build cache. This one does not depend on the cache
+# at all: it starts from the finished image and replaces only the harness
+# (source, contest.env, platform adapter, notes). Seconds, no network.
+#
+# Once, after a good full build:
+#   docker tag ctf-harness:latest ctf-harness:base
+#   docker save ctf-harness:base | pigz > ctf-harness-base.tar.gz     # backup
+# On the day, after editing contest.env / harness/platforms/starter_kit.py:
+#   docker build -f Dockerfile.contest -t ctf-harness:latest .
+# If the image is ever lost:  docker load < ctf-harness-base.tar.gz
+#
+# Anything that changes TOOLS (a new apt/pip package) still needs the full
+# Dockerfile, followed by re-tagging :base.
+ARG BASE=ctf-harness:base
+FROM ${BASE}
+WORKDIR /opt/ctf-harness
+# Drop the old copy first so a file deleted from the repo does not linger.
+RUN --network=none find /opt/ctf-harness -mindepth 1 -delete
+COPY . /opt/ctf-harness
+RUN --network=none pip install --no-index --no-deps --no-build-isolation -e .

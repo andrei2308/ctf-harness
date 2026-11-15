@@ -31,9 +31,24 @@ solver behaviours needed fixes along the way; the report lists each one.
 
 **One file: `contest.env`** at the repo root. Every setting in this document
 goes there as `NAME=value`. It is copied into the image and read at start-up, so
-the loop is: edit `contest.env`, `docker build` (only the last layer reruns, a
-few seconds), `python -m harness.preflight` inside the image. Anything set in
-the real environment (`docker run -e`, `export`) overrides the file.
+the loop is: edit `contest.env`, rebuild, `python -m harness.preflight` inside
+the image. Anything set in the real environment (`docker run -e`, `export`)
+overrides the file.
+
+**Rebuild with `Dockerfile.contest`,** which starts from the finished image and
+replaces only the harness, so it does not depend on Docker's build cache
+surviving:
+
+```bash
+# once, after a good full build
+docker tag ctf-harness:latest ctf-harness:base
+docker save ctf-harness:base | pigz > ctf-harness-base.tar.gz   # backup; `docker load` restores it
+# on the day
+docker build -f Dockerfile.contest -t ctf-harness:latest .
+```
+
+A change to the tools themselves (a new package) still needs the full
+`Dockerfile`, then re-tagging `:base`.
 
 What is a setting and what is code:
 
@@ -153,6 +168,7 @@ Known gaps.
 | Time limit per run | `CTF_TOTAL_SECONDS`, a little under it | Tool timeouts are clamped to the time left; without it nothing is |
 | Token limit per run | `CTF_TOTAL_TOKENS` | Stops cleanly instead of being cut off |
 | Model's max output tokens / context size | `CTF_MAX_OUTPUT_TOKENS` | Upper rungs ask for 16K and 32K; a smaller model rejects that outright |
+| The model is a reasoning model (preflight check 6 says so) | `CTF_MIN_OUTPUT_TOKENS=8192` or more | Hidden reasoning counts against `max_tokens`; rung 0's 4096 can be spent before it acts |
 | Small context window | `CTF_HISTORY_SOFT_CHARS`, `CTF_HISTORY_HARD_CHARS` | Defaults (40K / 160K chars) assume roughly 64K tokens or more |
 | Flag format | `CTF_FLAG_REGEX` | Default handles `CTF{..}` and prefixed forms like `DCTF{..}` only |
 | A wrong-flag penalty | `CTF_PENALIZE_WRONG=1` | Turns off ungrounded and repeat submissions |
@@ -212,10 +228,11 @@ Two things to know:
   cookie jar from `shell`.
 - **Prompts and ladder depths are untuned.** They have met one real model
   (GLM 5.3 Flash) on the three toy fixtures only.
-- **Rung 0's 4096 output tokens is small for a reasoning model.** A turn that
-  spends it all on hidden reasoning is now handled (a note, not a stall), but
-  still costs 4K tokens. `CTF_MAX_OUTPUT_TOKENS` only lowers caps; raising
-  rung 0 means editing `default_ladder`.
+- **Rung 0's 4096 output tokens is small for a reasoning model.** Set
+  `CTF_MIN_OUTPUT_TOKENS` to raise every rung's floor. Without it the solver
+  still recovers: a turn cut off with nothing produced doubles the cap for the
+  rest of the challenge, at the cost of that one wasted turn. Preflight check 6
+  reports whether the model reasons and whether it gets cut off.
 - **`harness/platforms/cyberedu_mcp.py` does not match the real server.** Its
   tool names lack the `cyberedu_` prefix, it sends `contest_id` where the
   server wants `contest_slug`, it calls a `get_contest_challenges` that does
@@ -223,12 +240,19 @@ Two things to know:
   passes the cookie as `CYBEREDU_SESSION` while the server reads
   `CYBEREDU_SESSION_COOKIE`. It also covers contests only, not the practice
   catalogue.
-- **Toy flags ship in the image** (`/opt/ctf-harness/tests`, `fixtures`). An
-  agent that wanders there auto-submits them (seen in rehearsal). Wrong flags
-  are free, but it is noise.
-- **Fixture results need the fixtures hidden from the agent.** On the host
-  the agent read `fixtures/locked-02/challenge.json` and "solved" an
-  unsolvable challenge.
+- **Toy flags ship in the image** (`/opt/ctf-harness/tests`, `fixtures`). They
+  are now collected at start-up and never submitted (`harness/flags/decoys.py`),
+  except with the fixtures rig, where they are the answers. Flags in your notes
+  are deliberately still submitted.
+- **Fixture results need the answers hidden from the agent.** On the host the
+  agent read `fixtures/locked-02/challenge.json` and "solved" an unsolvable
+  challenge. For any rehearsal suite, run `python scripts/hash_flags.py <suite>`
+  so it holds only SHA-256 hashes. The bundled `fixtures/` stay plaintext for
+  the tests, so results on them prove plumbing only.
+- **The agent can read the harness's environment** through `/proc`, because its
+  shell runs as the same user. The model key is therefore reachable by a model
+  that goes looking. Running the agent's shell as a separate user would close
+  this; not done.
 - **Unpinned downloads:** RsaCtfTool, jwt_tool and the Foundry installer
   follow upstream HEAD. The base image is pinned by digest; bump it
   deliberately, never on contest day (a new base invalidates every cached

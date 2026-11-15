@@ -98,6 +98,11 @@ class PlatformError(RuntimeError):
 class Platform(abc.ABC):
     """The contest surface. Implementations: CyberEduMcpPlatform, FilesTargetPlatform."""
 
+    # True when this platform grades against answers stored on the local disk
+    # (the fixtures rig). The harness then must not treat flag-shaped strings
+    # found in its own directories as decoys: the real answers are among them.
+    answers_on_disk: bool = False
+
     @abc.abstractmethod
     def list_challenges(self) -> list[Challenge]:
         """Enumerate every challenge currently visible to us."""

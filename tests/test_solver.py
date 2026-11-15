@@ -95,7 +95,9 @@ def test_length_cut_empty_turn_gets_a_note_not_a_stall():
     assert out.outcome == Outcome.SOLVED and plat.calls == [FLAG]
     msgs = solver.state.messages
     assert not any(m.role == "assistant" and not m.content and not m.tool_calls for m in msgs)
-    assert sum("hit the output limit" in m.content for m in msgs if m.role == "user") == 3
+    # one note, not one per cut-off turn, and the cap was doubled each time
+    assert sum("hit the output limit" in m.content for m in msgs if m.role == "user") == 1
+    assert solver.state.output_floor > 0
 
 
 def test_model_turn_logs_stop_reason():

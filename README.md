@@ -6,7 +6,7 @@ per-category specialist, which works it through a tool loop behind a hard
 flag-grounding guard, streams flags the instant they verify, and logs everything
 for the between-run dev loop.
 
-It runs today, fully offline (**115 passing tests**, no network, no credentials),
+It runs today, fully offline (**136 passing tests**, no network, no credentials),
 behind two swappable interfaces (`Platform`, `Model`) so the remaining organizer
 unknowns don't block anything — you drop real values in as they land.
 
@@ -61,13 +61,15 @@ scripts/         convert_benchmark.py (CTFTiny/NYU/InterCode -> suite layout)
 Dockerfile       Kali-based submission image: harness + full CTF toolset
 BENCHMARKS.md    How to run/convert benchmarks and read the judge report
 fixtures/        Self-contained demo challenges for the offline rig
-tests/           pytest (115): grounding, budget, submit, solver, routing, tools, e2e, review regressions
+tests/           pytest (136): grounding, budget, submit, solver, routing, tools, e2e, review regressions
 ```
 
 > **Start with [HANDOFF.md](HANDOFF.md)**: what you must supply for a run to work,
 > how to check the model endpoint (`python -m harness.preflight`), and what is
 > still unverified.
-> Building and validating the image locally: [CLAUDE_CODE_TASKS.md](CLAUDE_CODE_TASKS.md).
+> Image validation (done, see [VALIDATION_REPORT.md](VALIDATION_REPORT.md)):
+> [CLAUDE_CODE_TASKS.md](CLAUDE_CODE_TASKS.md). Next, rehearsal on real challenges:
+> [CLAUDE_CODE_REHEARSAL.md](CLAUDE_CODE_REHEARSAL.md).
 
 ## Quickstart (offline, no network, no credentials)
 

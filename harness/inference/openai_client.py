@@ -176,10 +176,18 @@ class OpenAIModel(Model):
             output=getattr(u, "completion_tokens", 0) or 0,
             cached_in=cached,
         ) if u else Usage()
+        reasoning = getattr(getattr(u, "completion_tokens_details", None),
+                            "reasoning_tokens", 0) or 0
+        if not reasoning:
+            # Endpoints that return the reasoning as text instead of a count.
+            hidden = getattr(msg, "reasoning_content", None) or getattr(msg, "reasoning", None)
+            if isinstance(hidden, str):
+                reasoning = len(hidden) // 4
         return ModelResponse(
             text=msg.content or "",
             tool_calls=tuple(tool_calls),
             usage=usage,
             stop_reason=choice.finish_reason or "",
             spec=self.spec,
+            reasoning_tokens=int(reasoning),
         )

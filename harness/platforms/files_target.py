@@ -30,6 +30,7 @@ harness. submit_flag compares against them when present; otherwise it reports
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -39,6 +40,8 @@ from .base import (Challenge, ChallengeKind, ConnInfo, Platform, PlatformError,
 
 
 class FilesTargetPlatform(Platform):
+    answers_on_disk = True
+
     def __init__(self, root: str | Path, submit_hook=None):
         """`root` holds one directory per challenge. `submit_hook(cid, flag) ->
         SubmitResult` lets you plug a real submit path (a mounted script/endpoint)
@@ -62,6 +65,8 @@ class FilesTargetPlatform(Platform):
         # multi-flag / staged challenge, or a single `flag`.
         if isinstance(meta.get("flags"), list):
             flags_required = max(1, len(meta["flags"]))
+        elif isinstance(meta.get("flags_sha256"), list):
+            flags_required = max(1, len(meta["flags_sha256"]))
         else:
             flags_required = int(meta.get("flags_required", 1) or 1)
         challenge = Challenge(
@@ -73,7 +78,7 @@ class FilesTargetPlatform(Platform):
             description=str(meta.get("description", "")),
             flags_required=flags_required,
             meta={k: v for k, v in meta.items()
-                  if k not in {"flag", "flags"}},  # keep expected flags out of Challenge.meta
+                  if k not in {"flag", "flags", "flag_sha256", "flags_sha256"}},  # no answers in meta
         )
         return challenge, meta
 
@@ -155,9 +160,17 @@ class FilesTargetPlatform(Platform):
             if flag_file.is_file():
                 expected = {ln.strip() for ln in
                             flag_file.read_text(encoding="utf-8").splitlines() if ln.strip()}
-        if not expected:
+        # Hashed answers: the suite holds only sha256(flag), so an agent that
+        # reads the fixtures cannot lift the answer (it did, in rehearsal).
+        hashed: set[str] = set()
+        if isinstance(meta.get("flags_sha256"), list):
+            hashed = {str(h).strip().lower() for h in meta["flags_sha256"]}
+        elif meta.get("flag_sha256"):
+            hashed = {str(meta["flag_sha256"]).strip().lower()}
+        if not expected and not hashed:
             return SubmitResult(accepted=False, message="no local answer to grade against")
-        ok = flag.strip() in expected
+        ok = flag.strip() in expected or (
+            hashlib.sha256(flag.strip().encode("utf-8")).hexdigest() in hashed)
         # The adapter is stateless per call; the submitter counts accepted flags
         # against Challenge.flags_required to decide when the challenge is solved.
         return SubmitResult(accepted=ok, message="correct" if ok else "incorrect")

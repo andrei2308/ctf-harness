@@ -92,6 +92,10 @@ class ModelResponse:
     usage: Usage = field(default_factory=Usage)
     stop_reason: str = ""
     spec: ModelSpec | None = None
+    # Hidden reasoning tokens in this turn, when the endpoint reports them. They
+    # count against max_tokens, so a reasoning model can spend the whole cap
+    # thinking and return nothing.
+    reasoning_tokens: int = 0
 
     @property
     def wants_tools(self) -> bool:

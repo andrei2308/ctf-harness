@@ -101,8 +101,11 @@ class EvidenceStore:
     a flag that was already seen.
     """
 
-    def __init__(self, pattern: re.Pattern[bytes] | None = None, max_bytes: int = 32 * 1024 * 1024):
+    def __init__(self, pattern: re.Pattern[bytes] | None = None, max_bytes: int = 32 * 1024 * 1024,
+                 ignore: frozenset[str] = frozenset()):
         self._pattern = pattern or DEFAULT_FLAG_RE
+        # Flag-shaped strings known not to be the answer (see flags/decoys.py).
+        self._ignore = ignore
         self._items: list[Evidence] = []
         self._seq = 0
         self._bytes = 0
@@ -135,6 +138,8 @@ class EvidenceStore:
         haystack = prior_tail + data
         for raw in candidates(self._pattern, haystack):
             flag = raw.decode("utf-8", "replace")
+            if flag in self._ignore:
+                continue
             if flag not in self._latched:
                 gf = GroundedFlag(flag=flag, raw=raw, source=source, evidence_seq=ev.seq)
                 self._latched[flag] = gf
@@ -176,8 +181,9 @@ class EvidenceStore:
     def claims_in(self, text: str) -> list[str]:
         """Flag-shaped strings in model prose, using this store's pattern. These
         are CLAIMS, not evidence; the caller decides what to do with them."""
-        return [raw.decode("utf-8", "replace")
-                for raw in candidates(self._pattern, text.encode("utf-8", "replace"))]
+        claims = [raw.decode("utf-8", "replace")
+                  for raw in candidates(self._pattern, text.encode("utf-8", "replace"))]
+        return [c for c in claims if c not in self._ignore]
 
 
 def extract_grounded(store: EvidenceStore) -> list[GroundedFlag]:

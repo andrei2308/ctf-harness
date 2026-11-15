@@ -129,10 +129,10 @@ RUN wget -q "https://github.com/pwndbg/pwndbg/releases/download/${PWNDBG_VERSION
 ENV CTF_GDB=pwndbg
 
 # --- git-based tools --------------------------------------------------------
+# RsaCtfTool is a package now (src/RsaCtfTool, entry point RsaCtfTool); the old
+# RsaCtfTool.py at the repo root is gone, so install it rather than wrap a path.
 RUN git clone --depth 1 https://github.com/RsaCtfTool/RsaCtfTool /opt/RsaCtfTool \
-      && (pip install -r /opt/RsaCtfTool/requirements.txt || true) \
-      && printf '#!/usr/bin/env bash\nexec python3 /opt/RsaCtfTool/RsaCtfTool.py "$@"\n' > /usr/local/bin/RsaCtfTool \
-      && chmod +x /usr/local/bin/RsaCtfTool || echo "WARN: RsaCtfTool skip"; \
+      && pip install /opt/RsaCtfTool || echo "WARN: RsaCtfTool skip"; \
     git clone --depth 1 https://github.com/ticarpi/jwt_tool /opt/jwt_tool \
       && (pip install -r /opt/jwt_tool/requirements.txt || true) \
       && printf '#!/usr/bin/env bash\nexec python3 /opt/jwt_tool/jwt_tool.py "$@"\n' > /usr/local/bin/jwt_tool \

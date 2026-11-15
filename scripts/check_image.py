@@ -63,7 +63,8 @@ CHECKS: list[tuple[str, str, bool]] = [
     ("ltrace / strace", have("ltrace", "strace"), O),
     # --- crypto ---------------------------------------------------------------
     ("sage factors", "sage -c 'print(factor(2^64+1))' | grep -q 274177", O),
-    ("RsaCtfTool", have("RsaCtfTool"), O),
+    # Run it: a wrapper on PATH can point at a script upstream has moved.
+    ("RsaCtfTool runs", "RsaCtfTool --help 2>&1 | grep -qi usage", O),
     ("pari-gp", have("gp"), O),
     # --- forensics / stego ----------------------------------------------------
     ("binwalk", have("binwalk"), C),

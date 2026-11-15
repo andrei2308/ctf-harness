@@ -41,6 +41,9 @@ MODEL_RETRY_DELAYS = (2.0, 5.0, 10.0, 20.0, 30.0)
 # counts as stalled. Each one gets a nudge to act first.
 MAX_PROSE_TURNS = 2
 _sleep = time.sleep          # indirection so tests can skip real waits
+_CUT_OFF_NOTE = ("Your last reply hit the output limit before you acted, so "
+                 "nothing came through. Keep your reasoning short and make the "
+                 "next tool call now.")
 
 
 class Outcome(str, Enum):
@@ -355,6 +358,7 @@ class Solver:
                            text=self._for_log(resp.text or ""),
                            calls=[tc.name for tc in resp.tool_calls],
                            tokens_in=resp.usage.input, tokens_out=resp.usage.output,
+                           stop=resp.stop_reason,
                            seconds=round(time.monotonic() - t0, 2))
 
             if resp.wants_tools:
@@ -377,6 +381,14 @@ class Solver:
                         self.state.messages.append(Message(
                             role="user",
                             content=self._progress_note() + " Find the remaining flag(s)."))
+                continue
+
+            # Cut off at the output cap before it produced anything: a reasoning
+            # model spent max_tokens thinking (seen with GLM at rung 0's 4096).
+            # That is not the model choosing to talk, so it is not a prose turn,
+            # and an empty assistant message is not worth keeping.
+            if resp.stop_reason == "length" and not (resp.text or "").strip():
+                self.state.messages.append(Message(role="user", content=_CUT_OFF_NOTE))
                 continue
 
             # No tool call. Either the model is claiming a flag, or it is talking

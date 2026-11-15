@@ -62,3 +62,14 @@ def test_solve_one_unsolvable_makes_no_false_submission():
         summary = solve_one(_cfg(root))
         assert summary["solved"] is False
         assert summary["submissions"]["solved_count"] == 0
+
+
+def test_task_prompt_is_logged():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "fix").mkdir()
+        _one_challenge(root / "fix")
+        summary = solve_one(_cfg(root))
+        events = [json.loads(l) for l in open(summary["log"])]
+        prompts = [e for e in events if e["kind"] == "task.prompt"]
+        assert len(prompts) == 1 and "f.txt" in prompts[0]["text"]

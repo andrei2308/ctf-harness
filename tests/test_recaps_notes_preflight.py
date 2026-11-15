@@ -214,3 +214,11 @@ def test_describe_never_prints_the_key(monkeypatch):
     text = "\n".join(preflight.describe(Config(inference_backend="openai", fast_model="qwen")))
     assert "sk-very-secret" not in text and "api key        set" in text
     assert "10.0.0.5:8000" in text and "qwen" in text
+
+
+def test_task_prompt_gives_an_absolute_work_dir_the_shell_is_already_in(kb):
+    # A relative path made models `cd runs/work/<id>` from inside it.
+    ch = Challenge(id="c", name="x", category="misc")
+    prompt = route(ch, None).task_prompt(ch, Path("runs/work/c"), None, [Path("a.txt")])
+    assert f"already runs in your working directory, {Path('runs/work/c').resolve()}" in prompt
+    assert "Files in your working directory: a.txt" in prompt

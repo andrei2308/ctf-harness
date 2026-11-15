@@ -77,3 +77,35 @@ def test_prose_flag_without_evidence_is_refused():
     assert plat.calls == []                      # nothing submitted
     assert out.outcome == Outcome.STALLED
     assert not sub.is_solved("c1")
+
+
+def test_length_cut_empty_turn_gets_a_note_not_a_stall():
+    # A reasoning model can spend all of max_tokens thinking and return nothing
+    # (GLM 5.3 Flash at rung 0). That must not count toward a stall, and no
+    # empty assistant message should be kept.
+    cut = ModelResponse(text="", usage=Usage(input=10, output=4096), stop_reason="length")
+    model = ScriptedModel([
+        cut, cut, cut,
+        ModelResponse(tool_calls=(ToolCall(id="1", name="reveal", arguments={}),),
+                      usage=Usage(input=10, output=5), stop_reason="tool_calls"),
+    ])
+    solver, plat, sub, log = _mk(model, ToolProfile("t", [_EchoFlagTool()]))
+    out = solver.run()
+    log.close()
+    assert out.outcome == Outcome.SOLVED and plat.calls == [FLAG]
+    msgs = solver.state.messages
+    assert not any(m.role == "assistant" and not m.content and not m.tool_calls for m in msgs)
+    assert sum("hit the output limit" in m.content for m in msgs if m.role == "user") == 3
+
+
+def test_model_turn_logs_stop_reason():
+    model = ScriptedModel([
+        ModelResponse(tool_calls=(ToolCall(id="1", name="reveal", arguments={}),),
+                      usage=Usage(input=10, output=5), stop_reason="tool_calls"),
+    ])
+    solver, plat, sub, log = _mk(model, ToolProfile("t", [_EchoFlagTool()]))
+    solver.run()
+    log.close()
+    import json
+    turns = [json.loads(l) for l in open(log.path) if '"model.turn"' in l]
+    assert turns and turns[0]["stop"] == "tool_calls"

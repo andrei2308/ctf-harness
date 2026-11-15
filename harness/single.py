@@ -102,6 +102,9 @@ def run_challenge(*, challenge: Challenge, platform: Platform, ladder: Ladder,
     log.event("challenge.prepared", challenge=cid, specialist=specialist.profile().name,
               files=len(files), has_target=conn is not None,
               flags_required=challenge.flags_required)
+    # The model's first view of the challenge (notes index included); without
+    # it a transcript cannot show what the model was told.
+    log.event("task.prompt", challenge=cid, chars=len(task_p), text=task_p)
 
     def fresh_start(at_rung: int) -> None:
         """Reset to a clean context seeded with a handover note written by the

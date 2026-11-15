@@ -62,8 +62,12 @@ class Specialist(abc.ABC):
             lines.append(f"Category: {challenge.category}")
         if challenge.description:
             lines.append(f"Description:\n{challenge.description}")
+        # Absolute, and say the shell is already there: given a relative path,
+        # models `cd` into it from inside it and lose a turn (seen with GLM).
+        lines.append(f"Your shell already runs in your working directory, "
+                     f"{Path(work_dir).resolve()}; use paths relative to it.")
         if files:
-            lines.append(f"Files in your working directory ({work_dir}): "
+            lines.append("Files in your working directory: "
                          + ", ".join(p.name for p in files))
         if conn and conn.url:
             lines.append(f"Web target: {conn.url}")

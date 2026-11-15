@@ -19,3 +19,4 @@ cyberedu_session*
 
 # Personal notes synced in for the image build (scripts/sync_knowledge.py)
 knowledge/ctf-notes/
+build.log

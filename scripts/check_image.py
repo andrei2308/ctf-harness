@@ -46,8 +46,9 @@ CHECKS: list[tuple[str, str, bool]] = [
     ("volatility3 module", "python3 -c 'import volatility3'", O),
     # --- rev / pwn ------------------------------------------------------------
     ("gdb runs", "gdb --batch -ex 'show version' | head -1", C),
-    ("pwndbg loads in gdb", 'test -s "$(echo /opt/gdbinit-pwndbg)" && gdb --nx --batch '
-                            "-ix /opt/gdbinit-pwndbg -ex 'pwndbg' 2>&1 | grep -qi pwndbg", O),
+    # The gdb tools run `$CTF_GDB --batch --nx`, so check exactly that.
+    ("pwndbg loads (as the gdb tools run it)",
+     "pwndbg --batch --nx -ex 'pwndbg' 2>&1 | grep -qi checksec", O),
     ("binutils (objdump/readelf/strings)", have("objdump", "readelf", "strings", "file", "xxd"), C),
     ("ROPgadget", "ROPgadget --version", C),
     ("ropper", "ropper --version", O),
@@ -90,6 +91,25 @@ CHECKS: list[tuple[str, str, bool]] = [
     ("apktool / jadx", have("apktool", "jadx"), O),
     ("forge / cast (foundry)", "forge --version && cast --version", O),
     ("solc runs with the agent's HOME", "solc --version", O),
+    # --- the harness's own tool wrappers, end to end ------------------------
+    # A binary being on PATH is not enough: these wrappers had bugs (a dot-dir
+    # Ghidra rejects; `python3 -m volatility3`, which has no __main__).
+    ("ghidra_decompile tool decompiles",
+     "printf 'int win(void){return 1337;}\\nint main(void){return win();}\\n' > g.c "
+     "&& gcc -o g g.c && python3 -c 'import pathlib; "
+     "from harness.agents.tools import LocalExecutor, ToolContext; "
+     "from harness.agents.exttools import GhidraDecompileTool; "
+     "c = ToolContext(challenge_id=\"c\", work_dir=pathlib.Path.cwd(), executor=LocalExecutor()); "
+     "r = GhidraDecompileTool().run({\"binary\": \"./g\", \"function\": \"win\"}, c); "
+     "assert b\"1337\" in r.output or b\"0x539\" in r.output, r.output[-300:]'", O),
+    ("volatility tool reaches Volatility",
+     "echo junk > m.raw && python3 -c 'import pathlib; "
+     "from harness.agents.tools import LocalExecutor, ToolContext; "
+     "from harness.agents.exttools import VolatilityTool; "
+     "c = ToolContext(challenge_id=\"c\", work_dir=pathlib.Path.cwd(), executor=LocalExecutor()); "
+     "r = VolatilityTool().run({\"image\": \"m.raw\", \"plugin\": \"windows.info\"}, c); "
+     "assert b\"No module named\" not in r.output and not r.error, (r.error, r.output[-300:]); "
+     "assert b\"symbol\" in r.output.lower() or b\"unsatisfied\" in r.output.lower(), r.output[-300:]'", O),
     # --- the harness itself ---------------------------------------------------
     ("openai SDK importable by the harness",
      "/opt/venv/bin/python -c 'import openai; print(openai.__version__)'", C),

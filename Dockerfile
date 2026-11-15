@@ -20,7 +20,11 @@
 # John is the CPU workhorse) and NO INTERNET (factordb / online RSA lookups are
 # dead — factor locally with sage / yafu). The image is large; SageMath and
 # SecLists are the bulk and sit behind the WITH_* args.
-FROM kalilinux/kali-rolling
+# Pinned by digest: with a bare tag, any `docker pull` of kali-rolling on the
+# build machine changes the base and throws away every cached layer, turning a
+# seconds-long contest-day rebuild into a full one that needs the network. Bump
+# the digest deliberately, never on contest day.
+FROM kalilinux/kali-rolling@sha256:1ff4a2be3849333687b3ed2b31bb5af0cd1b7c0a11ec7713feb5abe5a6b2795c
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
@@ -30,7 +34,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # --- core build deps (must succeed) ----------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 python3-pip python3-venv python3-dev build-essential \
-      git curl wget unzip ca-certificates ruby ruby-dev openjdk-17-jre-headless \
+      git curl wget unzip ca-certificates ruby ruby-dev default-jdk-headless \
  && rm -rf /var/lib/apt/lists/*
 
 # --- full apt toolkit (best-effort per package) ----------------------------
@@ -79,26 +83,50 @@ RUN for g in zsteg one_gadget seccomp-tools; do \
 ENV PATH="/opt/venv/bin:${PATH}"
 RUN python3 -m venv /opt/venv && pip install --upgrade pip && \
     pip install \
-      pwntools ROPgadget ropper angr z3-solver capstone unicorn pwndbg \
+      pwntools ROPgadget angr z3-solver capstone unicorn \
       pycryptodome pycryptodomex sympy numpy gmpy2 requests scapy
+# ropper: its dependency filebytes 0.10.2 (latest release) uses ast.Str, removed
+# in Python 3.14 (Kali's python3). Upstream fixed it but has not released, so
+# take filebytes from the pinned fix commit. Best-effort: ROPgadget is the
+# critical ROP tool.
+RUN (pip install "filebytes @ git+https://github.com/sashs/filebytes@ff7492d750140288e2c3ff25b8a648719be470ce" \
+      && pip install ropper) || echo "WARN: pip skip ropper"
 # extended python tooling, best-effort per package
 RUN for p in \
       fpylll cysignals roca-detect xortool primefac libnum \
       flask-unsign factordb-pycli paddingoracle frida-tools objection \
       oletools uncompyle6 decompyle3 yara-python flare-floss capa \
+      `# forensics: Kali has no volatility3 package any more` volatility3 \
       wfuzz dirsearch arpy \
       `# ocr` pytesseract \
       `# blockchain` web3 eth-abi eth-account eth-utils slither-analyzer solc-select vyper ; do \
         pip install "$p" || echo "WARN: pip skip $p"; \
       done \
  && (solc-select install 0.8.26 && solc-select use 0.8.26 || echo "WARN: solc-select skip")
+# solc-select keeps compilers under $HOME/.solc-select (here /root) and its
+# `solc` shim looks there at run time; the agent's HOME is the work dir, so the
+# shim finds nothing. Install the real binary at a fixed path and point the
+# venv's `solc` (first on PATH) at it.
+RUN b="$(find /root/.solc-select /opt/venv/.solc-select -type f -name 'solc-0.8.26' 2>/dev/null | head -1)"; \
+    if [ -n "$b" ]; then install -m 755 "$b" /usr/local/bin/solc-0.8.26 \
+      && ln -sf /usr/local/bin/solc-0.8.26 /opt/venv/bin/solc; \
+    else echo "WARN: solc binary not found, solc unavailable to the agent"; fi
 
-# pwndbg init, loaded explicitly by the gdb wrapper via CTF_GDB_INIT (the wrapper
-# runs gdb --nx so a planted ./.gdbinit is ignored). Resolve the real path.
-RUN printf 'source %s\n' \
-      "$(/opt/venv/bin/python -c 'import os,pwndbg;print(os.path.join(os.path.dirname(pwndbg.__file__),"gdbinit.py"))' 2>/dev/null)" \
-      > /opt/gdbinit-pwndbg || true
-ENV CTF_GDB_INIT=/opt/gdbinit-pwndbg
+# pwndbg: not on PyPI (the `pwndbg` name there is an old Python 2 upload) and
+# not packaged by Kali, so use the official portable release. It bundles its own
+# gdb and Python, so it does not depend on the system Python or on HOME. Pinned
+# by version and checksum. Both gdb tools launch CTF_GDB and fall back to plain
+# gdb when it is not on PATH (harness/agents/exttools.py:gdb_binary).
+ARG PWNDBG_VERSION=2026.10.28
+ARG PWNDBG_SHA256=17049a23ba8cbcf4780c4bc9b4aeb519f2801ceabe7304b55d3d622acca03b8c
+RUN wget -q "https://github.com/pwndbg/pwndbg/releases/download/${PWNDBG_VERSION}/pwndbg_${PWNDBG_VERSION}_x86_64-portable.tar.xz" \
+      -O /tmp/pwndbg.tar.xz \
+ && echo "${PWNDBG_SHA256}  /tmp/pwndbg.tar.xz" | sha256sum -c - \
+ && tar xJf /tmp/pwndbg.tar.xz -C /opt \
+ && ln -sf /opt/pwndbg/bin/pwndbg /usr/local/bin/pwndbg \
+ || echo "WARN: pwndbg skip"; \
+    rm -f /tmp/pwndbg.tar.xz
+ENV CTF_GDB=pwndbg
 
 # --- git-based tools --------------------------------------------------------
 RUN git clone --depth 1 https://github.com/RsaCtfTool/RsaCtfTool /opt/RsaCtfTool \

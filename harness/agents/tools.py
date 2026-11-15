@@ -110,6 +110,22 @@ class Executor(abc.ABC):
         ...
 
 
+def agent_env(cwd: Path) -> dict[str, str]:
+    """Environment for every process the agent can drive (its shell, gdb).
+
+    Inherit the image's PATH so baked-in tools (a venv with pwntools, Ghidra's
+    analyzeHeadless, radare2) are reachable, but NOT the rest of the
+    environment: the model endpoint credentials must never reach the agent."""
+    return {
+        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        "HOME": str(cwd),
+        # Keep tools non-interactive: no pagers, no prompts, dumb term. An
+        # autonomous agent must never block a slot waiting for input.
+        "PAGER": "cat", "GIT_PAGER": "cat", "TERM": "dumb",
+        "DEBIAN_FRONTEND": "noninteractive",
+    }
+
+
 class LocalExecutor(Executor):
     """Runs in a subprocess under `cwd`. For the LOCAL dev loop only.
 
@@ -131,19 +147,7 @@ class LocalExecutor(Executor):
                 # challenge directory.
                 ["bash", "-c", cmd],
                 cwd=str(cwd),
-                env={
-                    # Inherit the image's PATH so baked-in tools (a venv with
-                    # pwntools, Ghidra's analyzeHeadless, radare2) are reachable,
-                    # but do NOT inherit the rest of the environment — the model
-                    # endpoint credentials must never enter the agent's shell.
-                    "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
-                    "HOME": str(cwd),
-                    # Keep tools non-interactive: no pagers, no prompts, dumb term.
-                    # An autonomous agent must never block a slot waiting for input.
-                    "PAGER": "cat", "GIT_PAGER": "cat", "TERM": "dumb",
-                    "DEBIAN_FRONTEND": "noninteractive",
-                    **self._env,
-                },
+                env={**agent_env(cwd), **self._env},
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 stdin=subprocess.DEVNULL,

@@ -22,11 +22,38 @@ from __future__ import annotations
 import os
 import select
 import shlex
+import shutil
 import subprocess
 import time
 from pathlib import Path
 
-from .tools import MAX_TOOL_OUTPUT, Tool, ToolContext, ToolResult
+from .tools import MAX_TOOL_OUTPUT, Tool, ToolContext, ToolResult, agent_env
+
+
+def gdb_binary() -> str:
+    """The debugger to launch: CTF_GDB (the image sets it to the portable
+    pwndbg) when that is on PATH, else plain gdb. A failed pwndbg install must
+    degrade to gdb, not break both gdb tools."""
+    want = os.environ.get("CTF_GDB", "").strip()
+    if want and shutil.which(want):
+        return want
+    return "gdb"
+
+
+def gdb_argv(*flags: str) -> list[str]:
+    """Debugger command line up to the user's commands. --nx ignores ALL init
+    files, including a malicious .gdbinit planted in the untrusted challenge
+    dir; a trusted init in CTF_GDB_INIT is loaded explicitly instead. pwndbg
+    colours every line with ANSI codes, which the model pays for in tokens;
+    plain gdb has no such setting and would print an error for it."""
+    binary = gdb_binary()
+    parts = [binary, *flags, "--nx"]
+    init = os.environ.get("CTF_GDB_INIT")
+    if init and Path(init).is_file():
+        parts += ["-ix", init]
+    if binary != "gdb":
+        parts += ["-ex", "set disable-colors on"]
+    return parts + ["-ex", "set pagination off", "-ex", "set confirm off"]
 
 # The analysis tools we probe for and advertise to specialists. Binaries checked
 # with `command -v`; python modules with an import.
@@ -120,14 +147,7 @@ class GdbTool(Tool):
         cmds = args.get("commands") or []
         if not binary or not cmds:
             return ToolResult(self.name, b"", "gdb:args", error="binary and commands required")
-        # --nx ignores ALL init files, including a malicious .gdbinit planted in
-        # the untrusted challenge dir. When the image ships a trusted pwndbg/GEF
-        # init, CTF_GDB_INIT points at it and we load only that, explicitly.
-        parts = ["gdb", "--batch", "--nx"]
-        init = os.environ.get("CTF_GDB_INIT")
-        if init and Path(init).is_file():
-            parts += ["-ix", init]
-        parts += ["-ex", "set pagination off", "-ex", "set confirm off"]
+        parts = gdb_argv("--batch")
         for c in cmds:
             parts += ["-ex", str(c)]
         parts.append(binary)
@@ -141,26 +161,36 @@ class GdbTool(Tool):
                           truncated=len(out) > MAX_TOOL_OUTPUT)
 
 
-# A Ghidra post-script (Jython) that decompiles functions to C. Written into the
-# work dir and passed to analyzeHeadless. With no argument it dumps every
-# function; with a function name it dumps just that one.
+# A Ghidra post-script that decompiles functions to C. Written into the work dir
+# and passed to analyzeHeadless. With no argument it dumps every function; with
+# a function name it dumps just that one. Java, not Python: Ghidra compiles Java
+# scripts with its own JDK on every version, while .py scripts depend on Jython
+# or PyGhidra being set up.
+_GHIDRA_MARKER = "// ==== "
+_GHIDRA_SCRIPT_NAME = "CtfDecompile.java"
 _GHIDRA_DECOMPILE_SCRIPT = """\
-from ghidra.app.decompiler import DecompInterface
-from ghidra.util.task import ConsoleTaskMonitor
-args = getScriptArgs()
-want = args[0] if args else None
-program = getCurrentProgram()
-dec = DecompInterface()
-dec.openProgram(program)
-monitor = ConsoleTaskMonitor()
-fm = program.getFunctionManager()
-for f in fm.getFunctions(True):
-    if want and f.getName() != want:
-        continue
-    res = dec.decompileFunction(f, 60, monitor)
-    if res and res.decompileCompleted():
-        print("// ==== %s @ %s ====" % (f.getName(), f.getEntryPoint()))
-        print(res.getDecompiledFunction().getC())
+import ghidra.app.decompiler.DecompInterface;
+import ghidra.app.decompiler.DecompileResults;
+import ghidra.app.script.GhidraScript;
+import ghidra.program.model.listing.Function;
+
+public class CtfDecompile extends GhidraScript {
+    @Override
+    public void run() throws Exception {
+        String[] args = getScriptArgs();
+        String want = args.length > 0 ? args[0] : null;
+        DecompInterface dec = new DecompInterface();
+        dec.openProgram(currentProgram);
+        for (Function f : currentProgram.getFunctionManager().getFunctions(true)) {
+            if (want != null && !f.getName().equals(want)) continue;
+            DecompileResults r = dec.decompileFunction(f, 60, monitor);
+            if (r != null && r.decompileCompleted()) {
+                System.out.println("// ==== " + f.getName() + " @ " + f.getEntryPoint() + " ====");
+                System.out.println(r.getDecompiledFunction().getC());
+            }
+        }
+    }
+}
 """
 
 
@@ -186,14 +216,15 @@ class GhidraDecompileTool(Tool):
         if not binary:
             return ToolResult(self.name, b"", "ghidra:args", error="binary required")
         func = str(args.get("function", "")).strip()
-        script_path = ctx.work_dir / ".ghidra_decompile.py"
-        script_path.write_text(_GHIDRA_DECOMPILE_SCRIPT, encoding="utf-8")
-        proj = ctx.work_dir / ".ghidra_proj"
-        proj.mkdir(exist_ok=True)
+        # Ghidra rejects any path element starting with '.', so no dot-dirs.
+        tool_dir = ctx.work_dir / "ghidra_tool"
+        proj = tool_dir / "proj"
+        proj.mkdir(parents=True, exist_ok=True)
+        (tool_dir / _GHIDRA_SCRIPT_NAME).write_text(_GHIDRA_DECOMPILE_SCRIPT, encoding="utf-8")
         parts = ["analyzeHeadless", str(proj), "tmp",
                  "-import", binary,
-                 "-scriptPath", str(ctx.work_dir),
-                 "-postScript", ".ghidra_decompile.py"]
+                 "-scriptPath", str(tool_dir),
+                 "-postScript", _GHIDRA_SCRIPT_NAME]
         if func:
             parts.append(func)
         parts.append("-deleteProject")
@@ -203,6 +234,12 @@ class GhidraDecompileTool(Tool):
         if code == 127:
             return ToolResult(self.name, out, "ghidra:missing",
                               error="Ghidra (analyzeHeadless) not installed in this sandbox")
+        # Headless prints ~8 KB of INFO log around a few hundred bytes of C.
+        # Keep only the decompiled functions when there are any; otherwise keep
+        # everything, so an error stays visible.
+        i = out.find(_GHIDRA_MARKER.encode())
+        if code == 0 and i >= 0:
+            out = out[i:]
         return ToolResult(self.name, out, f"ghidra:{binary}", exit_code=code,
                           truncated=len(out) > MAX_TOOL_OUTPUT)
 
@@ -230,13 +267,15 @@ class VolatilityTool(Tool):
         if not image or not plugin:
             return ToolResult(self.name, b"", "vol:args", error="image and plugin required")
         extra = " ".join(shlex.quote(str(a)) for a in (args.get("args") or []))
-        # Prefer the vol3 module; fall back to a `vol`/`vol.py` launcher.
-        base = (f'if python3 -c "import volatility3" 2>/dev/null; then '
-                f'python3 -m volatility3 -q -f {shlex.quote(image)} {shlex.quote(plugin)} {extra}; '
-                f'elif command -v vol >/dev/null 2>&1; then '
-                f'vol -q -f {shlex.quote(image)} {shlex.quote(plugin)} {extra}; '
-                f'elif command -v vol.py >/dev/null 2>&1; then '
-                f'vol.py -q -f {shlex.quote(image)} {shlex.quote(plugin)} {extra}; '
+        # Prefer the `vol` launcher. The volatility3 package has no __main__, so
+        # `python3 -m volatility3` always fails; the module fallback calls the
+        # CLI entry point the way the launcher does.
+        rest = f"-q -f {shlex.quote(image)} {shlex.quote(plugin)} {extra}"
+        base = (f'if command -v vol >/dev/null 2>&1; then vol {rest}; '
+                f'elif command -v vol.py >/dev/null 2>&1; then vol.py {rest}; '
+                f'elif python3 -c "import volatility3" 2>/dev/null; then '
+                f'python3 -c "import sys; from volatility3.cli import main; '
+                f'sys.argv[0] = \'vol\'; sys.exit(main())" {rest}; '
                 f'else echo "__NO_VOLATILITY__"; exit 127; fi')
         timeout = ctx.clamp(args.get("timeout"), max(ctx.default_timeout, 120.0))
         out, code = ctx.executor.run(base, ctx.work_dir, timeout)
@@ -349,13 +388,10 @@ class InteractiveGdbTool(Tool):
                                   error="binary required to start")
             if sess is not None and not getattr(sess, "_closed", True):
                 sess.close()
-            parts = ["gdb", "--nx", "-q"]
-            init = os.environ.get("CTF_GDB_INIT")
-            if init and Path(init).is_file():
-                parts += ["-ix", init]
-            parts += ["-ex", "set pagination off", "-ex", "set confirm off", binary]
+            parts = gdb_argv("-q") + [binary]
             try:
                 proc = subprocess.Popen(parts, cwd=str(ctx.work_dir),
+                                        env=agent_env(ctx.work_dir),
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                         stderr=subprocess.STDOUT, bufsize=0)
             except FileNotFoundError:

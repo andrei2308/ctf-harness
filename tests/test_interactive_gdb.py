@@ -43,7 +43,7 @@ def test_stateful_gdb_session():
         run = tool.run({"action": "cmd", "cmd": "run"}, ctx)
         assert b"add" in run.output or b"Breakpoint" in run.output
         calc = tool.run({"action": "cmd", "cmd": "print 21+21"}, ctx)
-        assert b"42" in calc.output
+        assert b"42" in calc.output or b"0x2a" in calc.output   # pwndbg prints hex
 
         stop = tool.run({"action": "stop"}, ctx)
         assert "stop" in stop.source
@@ -55,3 +55,20 @@ def test_cmd_without_start_errors():
         ctx = ToolContext(challenge_id="c", work_dir=Path(dd), executor=LocalExecutor())
         r = InteractiveGdbTool().run({"action": "cmd", "cmd": "info registers"}, ctx)
         assert "no gdb session" in r.error
+
+
+def test_session_does_not_leak_credentials(monkeypatch):
+    # gdb's `shell` runs anything; the endpoint key must not be in its env.
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-must-not-leak")
+    with tempfile.TemporaryDirectory() as dd:
+        d = Path(dd)
+        binary = _build(d)
+        ctx = ToolContext(challenge_id="c", work_dir=d, executor=LocalExecutor())
+        tool = InteractiveGdbTool()
+        assert not tool.run({"action": "start", "binary": binary}, ctx).error
+        try:
+            out = tool.run({"action": "cmd", "cmd": "shell env"}, ctx).output
+            assert b"sk-must-not-leak" not in out
+            assert b"HOME=" + str(d).encode() in out
+        finally:
+            tool.run({"action": "stop"}, ctx)

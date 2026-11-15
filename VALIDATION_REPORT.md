@@ -165,6 +165,24 @@ What the transcripts showed. Defects 1–3 are fixed, each with a test that fail
 
 No malformed or ignored tool calls, no stuck repetition, no flag left unsubmitted, no flag submitted in the wrong form. Token growth was bounded: input rose from 1.7K to 11.6K tokens over 17 turns as `_diet` kicked in.
 
+## Set up outside the repo (not committed)
+
+- **`~/Desktop/cyberedu-mcp`**: clone of the official CyberEDU MCP server at
+  `f81b689`, with its client submodule, in its own venv. `mcp` is pinned to
+  1.30.0: with the 2.x SDK that pip picks by default, the server crashes on
+  start (`'Server' object has no attribute 'list_tools'`). The code was read
+  before running; it sends the cookie only to `api.cyber-edu.co` and
+  `sso.cyber-edu.co`.
+- **`~/.claude.json`**: the server is registered at user scope as `cyberedu`
+  (`claude mcp list` shows it connected), with the session cookie as the
+  environment variable `CYBEREDU_SESSION_COOKIE`. That file is the only place
+  the cookie is stored.
+- **GLM key**: read from `~/.claude/settings.json.glm` at run time and never
+  written anywhere. `HANDOFF.md` has the commands.
+- **Docker**: `kalilinux/kali-rolling` at the pinned digest plus the build
+  cache for `ctf-harness:latest`. Keep both: they make the 4 s rebuild.
+  Nothing was pruned.
+
 ## Open items for Andrei
 
 1. **Rehearse on real, harder challenges.** This is the largest remaining risk: fixtures are toys. Your CyberEDU account is now reachable. The official `cyberedu-mcp` server is set up for Claude Code at `~/Desktop/cyberedu-mcp`, outside this repo; it needed `mcp<2` pinned locally. It sees about 800 challenges across the CyberEDU, UNbreakable, ROCSC and DefCamp tenants. But **`harness/platforms/cyberedu_mcp.py` cannot work against that server**:

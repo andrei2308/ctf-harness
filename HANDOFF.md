@@ -18,8 +18,14 @@ Verified here: 115 tests pass, and the production path solves a fixture through
 the real `openai` SDK against a local fake endpoint that enforces tool-call
 pairing.
 
-**Not verified, and yours to do:** the Docker image has never been built, and
-nothing has run against a real model.
+**Validated on 2026-11-15** (branch `local-validation`; full detail in
+`VALIDATION_REPORT.md`): the image builds (14.3 GB, 5.1 GB gzipped);
+`scripts/check_image.py` passes 57/57 through the agent's own shell; 126 tests
+pass on the host and in the image; the offline end-to-end run solves the
+fixtures with `--network none`; a `contest.env` rebuild takes about 4 s with
+no network; and GLM 5.3 Flash solved the fixtures through the OpenAI adapter,
+on the host and in the image. The image build, four tool wrappers and three
+solver behaviours needed fixes along the way; the report lists each one.
 
 ## Changing settings on the day
 
@@ -114,8 +120,31 @@ docker run --rm -e OPENAI_BASE_URL=... -e OPENAI_API_KEY=... -e CTF_FAST_MODEL=.
 ```
 
 If `ctf-tools` does not list `pwntools`, the agent's shell is not seeing the
-venv. That was the suspected `PATH` problem; the fix is in, but only a build
-confirms it.
+venv. The 2026-11-15 build confirmed it does (`python3 is the venv's` passes).
+
+## Rehearsing against a real model on Andrei's machine
+
+The endpoint used for the 2026-11-15 rehearsal was z.ai's OpenAI-compatible
+API with the GLM key from `~/.claude/settings.json.glm`. Read the key from that
+file at run time; never copy it into a file in this repo:
+
+```bash
+export OPENAI_API_KEY="$(python3 -c 'import json,pathlib;print(json.loads(pathlib.Path.home().joinpath(".claude/settings.json.glm").read_text())["env"]["ANTHROPIC_AUTH_TOKEN"])')"
+export CTF_BACKEND=openai OPENAI_BASE_URL=https://api.z.ai/api/coding/paas/v4 CTF_FAST_MODEL=glm-5.3-flash
+python -m harness.preflight
+# in the image: pass the key by name only, so it never appears on a command line
+docker run --rm -e OPENAI_API_KEY -e OPENAI_BASE_URL -e CTF_FAST_MODEL ctf-harness:latest python -m harness.preflight
+```
+
+`glm-5.3-flash` is a reasoning model: hidden reasoning counts against
+`max_tokens`, and at rung 0 (4096) some turns return nothing. See Known gaps.
+
+CyberEDU (about 800 practice challenges) is reachable through the official MCP
+server, cloned and set up outside this repo at `~/Desktop/cyberedu-mcp` (own
+venv, `mcp<2` pinned: the server does not run on the 2.x SDK) and registered
+in Claude Code at user scope as `cyberedu`. The session cookie lives only in
+`~/.claude.json`. The harness's own adapter for it does not work yet; see
+Known gaps.
 
 ## Set these once the limits are announced
 
@@ -181,6 +210,29 @@ Two things to know:
   message looks like progress. Repeated identical commands are caught.
 - **`HttpTool` keeps no cookies** between calls. The agent can use `curl` with a
   cookie jar from `shell`.
-- **`solc-select`** is installed under `/root`, but the agent's `HOME` is the
-  work dir, so `solc` may not find its version. Affects blockchain only.
-- **Prompts and ladder depths are untuned.** They have never met a real model.
+- **Prompts and ladder depths are untuned.** They have met one real model
+  (GLM 5.3 Flash) on the three toy fixtures only.
+- **Rung 0's 4096 output tokens is small for a reasoning model.** A turn that
+  spends it all on hidden reasoning is now handled (a note, not a stall), but
+  still costs 4K tokens. `CTF_MAX_OUTPUT_TOKENS` only lowers caps; raising
+  rung 0 means editing `default_ladder`.
+- **`harness/platforms/cyberedu_mcp.py` does not match the real server.** Its
+  tool names lack the `cyberedu_` prefix, it sends `contest_id` where the
+  server wants `contest_slug`, it calls a `get_contest_challenges` that does
+  not exist, it never sends the `flag_id` that submission needs, and it
+  passes the cookie as `CYBEREDU_SESSION` while the server reads
+  `CYBEREDU_SESSION_COOKIE`. It also covers contests only, not the practice
+  catalogue.
+- **Toy flags ship in the image** (`/opt/ctf-harness/tests`, `fixtures`). An
+  agent that wanders there auto-submits them (seen in rehearsal). Wrong flags
+  are free, but it is noise.
+- **Fixture results need the fixtures hidden from the agent.** On the host
+  the agent read `fixtures/locked-02/challenge.json` and "solved" an
+  unsolvable challenge.
+- **Unpinned downloads:** RsaCtfTool, jwt_tool and the Foundry installer
+  follow upstream HEAD. The base image is pinned by digest; bump it
+  deliberately, never on contest day (a new base invalidates every cached
+  layer and turns a 4 s rebuild into a 30 min one that needs the network).
+- **Kali rolling moves.** Python is 3.14 there now; packages built for older
+  Pythons fail to install. Build failures after a base bump are most
+  likely this.

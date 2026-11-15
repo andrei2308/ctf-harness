@@ -144,7 +144,8 @@ The agent is routed to a **category specialist** — rev, pwn, crypto,
 forensics(+stego), web, mobile, blockchain, pyjail, or a generalist fallback —
 each with a concrete tool playbook in its prompt and a fitting profile. Beyond
 `shell`/`write_file`/`knowledge` it gets structured wrappers for the fiddly tools:
-`gdb` (batch, pwndbg-loaded while `--nx` ignores a planted `./.gdbinit`),
+`gdb` (batch; runs `CTF_GDB`, the portable pwndbg in the image, falling back to
+plain gdb, with `--nx` so a planted `./.gdbinit` is ignored),
 `gdb_session` (persistent interactive debugging), `ghidra_decompile` (Ghidra
 headless → C), and `volatility`. Wrappers force **non-interactive** mode and
 **degrade honestly** — a missing tool returns "not installed", never a fabrication.

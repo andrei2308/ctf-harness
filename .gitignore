@@ -10,6 +10,8 @@ dist/
 # NEVER commit credentials — the contest logs & reviews everything.
 .env
 *.env
+# the settings file is meant to be committed (it must never hold a key)
+!contest.env
 session.json
 *.session.json
 .cyberedu-mcp/

@@ -44,6 +44,7 @@ def _raw_args(arguments: dict):
 
 
 class OpenAIModel(Model):
+    _no_vision_models: set[str] = set()       # models that rejected image input
     _mct_models: set[str] = set()             # models that want max_completion_tokens
     _fixed_sampling_models: set[str] = set()  # models that refuse temperature/top_p
 
@@ -76,7 +77,7 @@ class OpenAIModel(Model):
         return self._client
 
     @staticmethod
-    def _to_chat(messages: list[Message]) -> list[dict]:
+    def _to_chat(messages: list[Message], vision: bool = True) -> list[dict]:
         out: list[dict] = []
         for m in messages:
             if m.role == "tool":
@@ -91,6 +92,13 @@ class OpenAIModel(Model):
                                      "arguments": json.dumps(_raw_args(tc.arguments))},
                     } for tc in m.tool_calls],
                 })
+            elif m.images and vision:
+                out.append({"role": m.role, "content": [{"type": "text", "text": m.content}] + [
+                    {"type": "image_url", "image_url": {"url": u}} for u in m.images]})
+            elif m.images:
+                out.append({"role": m.role, "content": m.content + (
+                    "\n[The image is not shown: this model does not accept images. "
+                    "Inspect it with tools instead (OCR, rendering it as text, zbarimg).]")})
             else:
                 out.append({"role": m.role, "content": m.content})
         return out
@@ -115,11 +123,13 @@ class OpenAIModel(Model):
 
     def complete(self, messages: list[Message], tools: list[dict] | None = None) -> ModelResponse:
         client = self._ensure_client()
+        cls = type(self)
+        has_images = any(m.images for m in messages)
+        vision = self.spec.name not in cls._no_vision_models
         kwargs: dict = {
             "model": self.spec.name,
-            "messages": self._to_chat(messages),
+            "messages": self._to_chat(messages, vision=vision),
         }
-        cls = type(self)
         use_mct = self._use_completion_tokens or self.spec.name in cls._mct_models
         drop_sampling = self._drop_sampling or self.spec.name in cls._fixed_sampling_models
         kwargs["max_completion_tokens" if use_mct else "max_tokens"] = self.spec.max_tokens
@@ -146,6 +156,13 @@ class OpenAIModel(Model):
             if ("temperature" in text or "top_p" in text) and not drop_sampling and (
                     "unsupported" in text or "not support" in text or "only the default" in text):
                 cls._fixed_sampling_models.add(self.spec.name)
+                return self.complete(messages, tools)
+            # A model without vision rejects image parts (seen: glm-5.3 answers
+            # 400 "messages.content.type is invalid, allowed values: ['text']").
+            # Remember it and resend with the images described in text.
+            if has_images and vision and ("image" in text or "content.type" in text
+                                          or "content type" in text):
+                cls._no_vision_models.add(self.spec.name)
                 return self.complete(messages, tools)
             if is_context_overflow(str(e)):
                 raise ContextOverflow(str(e)) from e

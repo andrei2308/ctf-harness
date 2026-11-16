@@ -115,6 +115,10 @@ class Message:
     # call to precede its result in the transcript, and without it the model
     # cannot see which command produced which output.
     tool_calls: tuple[ToolCall, ...] = ()
+    # Images for the model to look at, as data: URLs (view_image). Only a user
+    # message carries them; an adapter whose model cannot see images says so
+    # in text instead.
+    images: tuple[str, ...] = ()
 
 
 class ModelError(RuntimeError):

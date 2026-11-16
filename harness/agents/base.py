@@ -137,6 +137,7 @@ class Solver:
         self.stuck_dup_threshold = stuck_dup_threshold    # consecutive repeated calls
         self._recent_sigs: deque[str] = deque(maxlen=6)
         self._dup_hits = 0
+        self._pending_images: list[tuple[str, str]] = []   # (name, data URL)
         self._no_progress = 0
         self._last_evidence_bytes = state.store.total_bytes
         self._stuck_nudged = False
@@ -224,7 +225,26 @@ class Solver:
                          output=self._for_log(res.output.decode("utf-8", "replace")))
         if newly:
             self._submit_grounded(newly)
+        for url in (res.meta or {}).get("images") or []:
+            self._pending_images.append((str(res.meta.get("image_name", "")), url))
         return Message(role="tool", content=text, tool_call_id=tc.id, name=tc.name)
+
+    def _attach_images(self) -> None:
+        """Images a tool produced go to the model in one user message after the
+        tool results (chat APIs take images only there). Older images are
+        replaced by a note: every message is re-sent each turn."""
+        if not self._pending_images:
+            return
+        msgs = self.state.messages
+        for i, m in enumerate(msgs):
+            if m.images:
+                msgs[i] = replace(m, images=(), content=m.content + " [image no longer shown]")
+        names = ", ".join(n for n, _ in self._pending_images)
+        msgs.append(Message(role="user", content=f"The image(s) you asked to view: {names}.",
+                            images=tuple(u for _, u in self._pending_images)))
+        self.log.event("tool.image", challenge=self.state.challenge_id,
+                       images=len(self._pending_images), names=names[:200])
+        self._pending_images = []
 
     def _raise_output_cap(self) -> None:
         """A turn was cut off at max_tokens with nothing produced: double the
@@ -392,6 +412,7 @@ class Solver:
                                                    tool_calls=resp.tool_calls))
                 for tc in resp.tool_calls:
                     self.state.messages.append(self._handle_tool_call(tc))
+                self._attach_images()
                 if self.state.store.grounded_flags():
                     grounded_any = True
                     if self.submitter.is_solved(cid):

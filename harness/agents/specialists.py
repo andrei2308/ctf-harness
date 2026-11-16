@@ -15,11 +15,12 @@ Prompts name real tools but stay terse — token efficiency is scored.
 from __future__ import annotations
 
 import abc
+import os
 from pathlib import Path
 
 from ..platforms.base import Challenge, ChallengeKind, ConnInfo
 from .exttools import (GdbTool, GhidraDecompileTool, InteractiveGdbTool,
-                       VolatilityTool)
+                       ViewImageTool, VolatilityTool)
 from .knowledge import KnowledgeSearchTool, primer
 from .limits import Limits
 from .tools import (HttpTool, ServiceConnectTool, ServiceRecvTool,
@@ -94,8 +95,11 @@ class Specialist(abc.ABC):
 
 
 # Shared tool sets -----------------------------------------------------------
-def _base():            # shell, script-writing, and the offline knowledge base
-    return [ShellTool(), WriteFileTool(), KnowledgeSearchTool()]
+def _base():            # shell, script-writing, the offline knowledge base, images
+    tools = [ShellTool(), WriteFileTool(), KnowledgeSearchTool()]
+    if os.environ.get("CTF_VISION", "1").strip() != "0":
+        tools.append(ViewImageTool())
+    return tools
 
 
 class RevSpecialist(Specialist):

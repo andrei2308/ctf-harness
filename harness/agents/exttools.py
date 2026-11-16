@@ -432,3 +432,79 @@ class InteractiveGdbTool(Tool):
 
         return ToolResult(self.name, b"", "gdb_session:badaction",
                           error="action must be start | cmd | stop")
+
+
+# --------------------------------------------------------------------------- #
+# Looking at an image                                                          #
+# --------------------------------------------------------------------------- #
+
+MAX_IMAGE_SIDE = 1024
+MAX_IMAGE_BYTES = 3_000_000
+
+
+class ViewImageTool(Tool):
+    """Show an image file to the model.
+
+    In rehearsal the agent rebuilt a handwritten flag from a mouse-movement
+    pcap, then spent its whole budget reading the drawing through OCR and ASCII
+    art. A model with vision reads it at a glance. The image goes to the model
+    in the next message; a model without vision is told so and keeps its tools.
+    The image is reference material, not evidence: a flag read from it must
+    still be printed by a tool to count as grounded."""
+
+    name = "view_image"
+    description = ("Look at an image file (PNG, JPEG, GIF, BMP, ...) in the working "
+                   "directory: a rendered plot, a QR code, a screenshot, handwriting. "
+                   "It is shown to you in the next message.")
+
+    def input_schema(self) -> dict:
+        return {"type": "object", "properties": {
+            "path": {"type": "string", "description": "image path, relative to the working directory"},
+        }, "required": ["path"]}
+
+    def run(self, args: dict, ctx: ToolContext) -> ToolResult:
+        raw = str(args.get("path", "")).strip()
+        if not raw:
+            return ToolResult(self.name, b"", "view_image:args", error="path required")
+        work = Path(ctx.work_dir).resolve()
+        path = (work / raw).resolve()
+        if path != work and work not in path.parents and Path("/tmp") not in path.parents:
+            return ToolResult(self.name, b"", "view_image:scope",
+                              error="only files under the working directory or /tmp")
+        if not path.is_file():
+            return ToolResult(self.name, b"", "view_image:missing", error=f"no such file: {raw}")
+        try:
+            data, mime, size = _image_for_model(path)
+        except ValueError as e:
+            return ToolResult(self.name, b"", "view_image:format", error=str(e))
+        import base64
+        url = f"data:{mime};base64,{base64.b64encode(data).decode()}"
+        note = f"[{raw}: {size[0]}x{size[1]} image, shown in the next message]".encode()
+        return ToolResult(self.name, note, f"view_image:{raw}", is_evidence=False,
+                          meta={"images": [url], "image_name": raw})
+
+
+def _image_for_model(path: Path) -> tuple[bytes, str, tuple[int, int]]:
+    """PNG bytes no larger than MAX_IMAGE_SIDE per side. Without Pillow, a PNG or
+    JPEG under the size limit is passed through as it is."""
+    try:
+        from PIL import Image
+    except ImportError:
+        head = path.read_bytes()[:8]
+        mime = ("image/png" if head.startswith(b"\x89PNG") else
+                "image/jpeg" if head.startswith(b"\xff\xd8") else None)
+        if not mime or path.stat().st_size > MAX_IMAGE_BYTES:
+            raise ValueError("cannot convert this image here; save it as a small PNG first")
+        return path.read_bytes(), mime, (0, 0)
+    import io
+    try:
+        im = Image.open(path)
+        im.load()
+    except Exception as e:  # noqa: BLE001 - any decoder failure is a bad image
+        raise ValueError(f"not an image Pillow can read: {e}") from None
+    if im.mode not in ("RGB", "L"):
+        im = im.convert("RGB")
+    im.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE))
+    buf = io.BytesIO()
+    im.save(buf, "PNG", optimize=True)
+    return buf.getvalue(), "image/png", im.size

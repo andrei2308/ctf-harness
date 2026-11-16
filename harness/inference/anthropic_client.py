@@ -73,7 +73,11 @@ class AnthropicModel(Model):
                 api_msgs.append({"role": "assistant", "content": blocks})
             else:
                 # The API rejects empty text content.
-                api_msgs.append({"role": m.role, "content": m.content or "(no text)"})
+                text = m.content or "(no text)"
+                if m.images:
+                    text += ("\n[The image is not shown: this adapter does not send images. "
+                             "Inspect it with tools instead.]")
+                api_msgs.append({"role": m.role, "content": text})
         return "\n\n".join(p for p in system_parts if p), api_msgs
 
     def complete(self, messages: list[Message], tools: list[dict] | None = None) -> ModelResponse:

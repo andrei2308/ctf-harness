@@ -49,3 +49,21 @@ def test_agent_processes_drop_net_admin_only_under_lockdown(monkeypatch):
     assert agent_argv_prefix() == []
     monkeypatch.setenv("CTF_EGRESS_LOCKDOWN", "1")
     assert agent_argv_prefix()[:2] == ["setpriv", "--bounding-set=-net_admin,-net_raw"]
+
+
+def test_the_agents_group_reaches_only_the_target():
+    # Rehearsal: the agent used the allowed platform API itself while hunting
+    # for the session cookie. Only the harness needs the model and platform.
+    rs = egress.rules([("35.242.202.105", 32287)], [("1.2.3.4", 443), ("5.6.7.8", 443)],
+                      agent_gid=4242)
+    flat = [" ".join(r) for r in rs if r[0] == "iptables"]
+    gate = next(i for i, r in enumerate(flat) if "--gid-owner 4242" in r and "REJECT" in r)
+    target = next(i for i, r in enumerate(flat) if "-d 35.242.202.105" in r)
+    harness = [i for i, r in enumerate(flat) if "-d 1.2.3.4" in r or "-d 5.6.7.8" in r]
+    assert target < gate < min(harness)          # target for all; the rest not for the agent
+
+
+def test_agent_processes_run_in_their_own_group(monkeypatch):
+    from harness.agents.tools import AGENT_GID
+    monkeypatch.setenv("CTF_EGRESS_LOCKDOWN", "1")
+    assert f"--regid={AGENT_GID}" in agent_argv_prefix()

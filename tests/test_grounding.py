@@ -53,3 +53,16 @@ def test_duplicate_flag_reported_once():
     first = store.record("a", FLAG)
     second = store.record("b", FLAG)
     assert len(first) == 1 and second == []  # latched; not re-reported
+
+
+def test_a_flag_body_cannot_span_prose_with_braces():
+    # Rehearsal: a run-log line (one long JSON line) gave "CTF{, flag{, ...}".
+    from harness.flags.grounding import EvidenceStore, flag_pattern
+    s = EvidenceStore(pattern=flag_pattern())
+    got = [g.flag for g in s.record("t", b'formats like CTF{, flag{, HTB{x} ... and CTF{real_one}')]
+    assert "CTF{real_one}" in got and not any("flag{" in g for g in got)
+
+
+def test_harness_source_examples_are_decoys():
+    from harness.flags.decoys import known_decoys
+    assert "CTF{...}" in known_decoys()           # e.g. the submit_flag description

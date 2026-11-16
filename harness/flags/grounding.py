@@ -30,7 +30,10 @@ from dataclasses import dataclass, field
 # Default DefCamp-style flag: CTF{ ... }. The body is intentionally permissive
 # (any non-brace run) because flags vary (sha256 hex, words, symbols). Tighten
 # per the organizers' confirmed grammar. Case-insensitive prefix is tolerated.
-DEFAULT_FLAG_RE = re.compile(rb"CTF\{[^}\r\n]{1,512}\}", re.IGNORECASE)
+# The body excludes '{' as well as '}': a log line is one long JSON line, and
+# with '{' allowed the pattern spanned prose such as "CTF{, flag{, ..." up to
+# the next '}' (rehearsal: two junk submissions). Real flags do not nest braces.
+DEFAULT_FLAG_RE = re.compile(rb"CTF\{[^{}\r\n]{1,512}\}", re.IGNORECASE)
 
 # The default used at run time. The flag grammar is not confirmed, and both
 # `CTF{..}` and prefixed forms such as `DCTF{..}` are plausible, so this captures
@@ -39,7 +42,7 @@ DEFAULT_FLAG_RE = re.compile(rb"CTF\{[^}\r\n]{1,512}\}", re.IGNORECASE)
 # is right, and which one cannot be told from the bytes alone ("DCTF{x}" vs a
 # "CTF{x}" that follows padding in a dump).
 VARIANT_FLAG_RE = re.compile(
-    rb"(?P<prefix>[A-Za-z0-9]{0,8}?)(?P<bare>CTF\{[^}\r\n]{1,512}\})", re.IGNORECASE)
+    rb"(?P<prefix>[A-Za-z0-9]{0,8}?)(?P<bare>CTF\{[^{}\r\n]{1,512}\})", re.IGNORECASE)
 
 
 def flag_pattern() -> re.Pattern[bytes]:

@@ -26,7 +26,9 @@ from pathlib import Path
 from .grounding import candidates, flag_pattern
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-_DEFAULT_DIRS = ("tests", "fixtures")
+# harness/ too: its prompts and docstrings hold examples (CTF{...}, CTF{x}),
+# and the agent read them back from its own run log in rehearsal.
+_DEFAULT_DIRS = ("tests", "fixtures", "harness")
 _MAX_FILE = 4 * 1024 * 1024
 _MAX_TOTAL = 64 * 1024 * 1024
 

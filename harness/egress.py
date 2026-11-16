@@ -9,8 +9,10 @@ allow only:
 
   * loopback and replies on established connections,
   * DNS,
-  * the challenge's own service address(es),
-  * the model endpoint, and the platform API the harness itself uses.
+  * the challenge's own service address(es) — the only thing the agent's
+    commands may reach (they run in their own group, AGENT_GID),
+  * for the harness and the platform server only: the model endpoint and the
+    platform API.
 
 Everything else is rejected. The agent's commands run with NET_ADMIN and
 NET_RAW removed from their capability bounding set (see
@@ -83,16 +85,29 @@ def _resolve(host: str) -> list[str]:
         raise EgressError(f"cannot resolve {host}: {e}") from e
 
 
-def rules(allowed: list[tuple[str, int]]) -> list[list[str]]:
-    """iptables commands (IPv4) for an allowlist of (ip, port). IPv6 is closed
-    entirely apart from loopback."""
+def rules(targets: list[tuple[str, int]], harness: list[tuple[str, int]] = (),
+          agent_gid: int | None = None) -> list[list[str]]:
+    """iptables commands (IPv4). Everyone may reach the challenge's own
+    service; only processes outside the agent's group (the harness and the
+    platform server) may also reach the model and the platform API. IPv6 is
+    closed apart from loopback.
+
+    In rehearsal the agent, unable to fetch a file, used the allowed platform
+    API itself (unauthenticated) while looking for a way to the session cookie:
+    its commands have no business reaching anything but the target."""
     v4 = [["iptables", "-F", "OUTPUT"],
           ["iptables", "-A", "OUTPUT", "-o", "lo", "-j", "ACCEPT"],
           ["iptables", "-A", "OUTPUT", "-m", "conntrack", "--ctstate",
            "ESTABLISHED,RELATED", "-j", "ACCEPT"],
           ["iptables", "-A", "OUTPUT", "-p", "udp", "--dport", "53", "-j", "ACCEPT"],
           ["iptables", "-A", "OUTPUT", "-p", "tcp", "--dport", "53", "-j", "ACCEPT"]]
-    for ip, port in sorted(set(allowed)):
+    for ip, port in sorted(set(targets)):
+        v4.append(["iptables", "-A", "OUTPUT", "-p", "tcp", "-d", ip,
+                   "--dport", str(port), "-j", "ACCEPT"])
+    if agent_gid is not None:
+        v4.append(["iptables", "-A", "OUTPUT", "-m", "owner", "--gid-owner",
+                   str(agent_gid), "-j", "REJECT"])
+    for ip, port in sorted(set(harness) - set(targets)):
         v4.append(["iptables", "-A", "OUTPUT", "-p", "tcp", "-d", ip,
                    "--dport", str(port), "-j", "ACCEPT"])
     v4.append(["iptables", "-A", "OUTPUT", "-j", "REJECT"])
@@ -105,11 +120,11 @@ def rules(allowed: list[tuple[str, int]]) -> list[list[str]]:
 def lockdown(conn: ConnInfo | None, run=subprocess.run) -> list[tuple[str, int]]:
     """Install the allowlist. Returns the (ip, port) pairs allowed. Raises
     EgressError if any rule fails; the caller must not start the agent then."""
-    allowed: list[tuple[str, int]] = []
-    for host, port in targets(conn) + harness_endpoints():
-        for ip in _resolve(host):
-            allowed.append((ip, port))
-    for cmd in rules(allowed):
+    from .agents.tools import AGENT_GID
+    tgt = [(ip, port) for host, port in targets(conn) for ip in _resolve(host)]
+    own = [(ip, port) for host, port in harness_endpoints() for ip in _resolve(host)]
+    allowed = tgt + own
+    for cmd in rules(tgt, own, agent_gid=AGENT_GID):
         try:
             r = run(cmd, capture_output=True, text=True, timeout=30)
         except (OSError, subprocess.SubprocessError) as e:

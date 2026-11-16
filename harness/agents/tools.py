@@ -116,8 +116,14 @@ def agent_argv_prefix() -> list[str]:
     bounding set, so the agent cannot rewrite the firewall or send raw
     packets, even as root. Empty otherwise."""
     if os.environ.get("CTF_EGRESS_LOCKDOWN", "").strip().lower() in ("1", "true", "yes"):
-        return ["setpriv", "--bounding-set=-net_admin,-net_raw", "--"]
+        # Its own group too: the firewall lets this group reach only the
+        # challenge's service (harness/egress.py AGENT_GID).
+        return ["setpriv", "--bounding-set=-net_admin,-net_raw",
+                f"--regid={AGENT_GID}", "--clear-groups", "--"]
     return []
+
+
+AGENT_GID = 4242
 
 
 def agent_env(cwd: Path) -> dict[str, str]:

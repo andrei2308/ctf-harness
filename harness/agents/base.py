@@ -42,6 +42,9 @@ MODEL_RETRY_DELAYS = (2.0, 5.0, 10.0, 20.0, 30.0)
 # counts as stalled. Each one gets a nudge to act first.
 MAX_PROSE_TURNS = 2
 _sleep = time.sleep          # indirection so tests can skip real waits
+# Explicit answers (submit_flag) per challenge: few when a wrong one costs.
+MAX_ANSWER_SUBMITS_PENALIZED = 3
+MAX_ANSWER_SUBMITS = 20
 _CUT_OFF_NOTE = ("Your last reply hit the output limit before you acted, so "
                  "nothing came through. Keep your reasoning short and make the "
                  "next tool call now.")
@@ -79,6 +82,7 @@ class SolverState:
     output_floor: int = 0
     notes: list[str] = field(default_factory=list)
     planned: bool = False          # a planning step has run for this challenge
+    answer_submits: int = 0        # explicit submit_flag calls that reached the grader
 
     def note(self, text: str) -> None:
         self.notes.append(text)
@@ -193,7 +197,9 @@ class Solver:
                        args=self._for_log(_args_text(tc.arguments)))
         tool = self._tools.get(tc.name)
         t0 = time.monotonic()
-        if tool is None:
+        if tc.name == "submit_flag" and tool is not None:
+            res = self._submit_answer(tc.arguments or {})
+        elif tool is None:
             res = ToolResult(tc.name, b"", f"{tc.name}:unknown",
                              error=f"no such tool: {tc.name}")
         else:
@@ -210,7 +216,8 @@ class Solver:
         # Record REAL output as evidence and stream any grounded flag now.
         # Reference material (knowledge base, summaries) is NOT evidence: an
         # example CTF{...} in a writeup must never ground.
-        newly = (self.state.store.record(res.source, res.output)
+        newly = (self.state.store.record(res.source, res.output,
+                                         cmd=_args_text(tc.arguments))
                  if res.output and res.is_evidence else [])
         limit = self.limits.tool_output_bytes
         cut = len(res.output) > limit
@@ -228,6 +235,34 @@ class Solver:
         for url in (res.meta or {}).get("images") or []:
             self._pending_images.append((str(res.meta.get("image_name", "")), url))
         return Message(role="tool", content=text, tool_call_id=tc.id, name=tc.name)
+
+    def _submit_answer(self, args: dict) -> ToolResult:
+        """submit_flag: an explicit answer. It must appear in the output of a
+        command that did not itself contain it, unless wrong answers are free;
+        and only a few such submissions per challenge are allowed."""
+        cid = self.state.challenge_id
+        value = str(args.get("flag", "")).strip()[:512]
+        def out(text: str, error: str = "") -> ToolResult:
+            return ToolResult("submit_flag", text.encode(), "submit_flag",
+                              error=error, is_evidence=False)
+        if not value:
+            return out("", error="flag is empty")
+        cap = MAX_ANSWER_SUBMITS if self.submitter.allow_ungrounded else MAX_ANSWER_SUBMITS_PENALIZED
+        if self.state.answer_submits >= cap:
+            return out("", error=f"submission limit reached ({cap}) for this challenge")
+        gf = self.state.store.contains_independent(value)
+        if gf is None:
+            if not self.submitter.allow_ungrounded:
+                return out("", error=("not submitted: that value is not in the output of any "
+                                      "command (other than one that prints it verbatim). "
+                                      "Submit the answer exactly as a tool produced it."))
+            gf = GroundedFlag(flag=value, raw=value.encode("utf-8", "replace"),
+                              source="submit_flag (ungrounded)", evidence_seq=0)
+        self.state.answer_submits += 1
+        res = self.submitter.submit(cid, gf)
+        if res.accepted or res.already_solved:
+            return out(f"Accepted. {self._progress_note()}")
+        return out(f"Not accepted. {res.message or ''}".strip())
 
     def _attach_images(self) -> None:
         """Images a tool produced go to the model in one user message after the
@@ -413,6 +448,10 @@ class Solver:
                 for tc in resp.tool_calls:
                     self.state.messages.append(self._handle_tool_call(tc))
                 self._attach_images()
+                if self.submitter.is_solved(cid):          # e.g. via submit_flag
+                    self.log.attempt_end(cid, Outcome.SOLVED.value, "flag accepted")
+                    return SolveOutcome(Outcome.SOLVED, cid, "flag accepted",
+                                        True, self.state.iters_done)
                 if self.state.store.grounded_flags():
                     grounded_any = True
                     if self.submitter.is_solved(cid):
@@ -499,7 +538,8 @@ class Solver:
         if not claims:
             return ("Do not stop or narrate: act. Make a tool call now. If you "
                     "believe you have the flag, print it with a tool so it appears "
-                    "in real output."), False
+                    "in real output. If the answer is not in flag format (a password "
+                    "or value the challenge asks for), call submit_flag with it."), False
         grounded = took = submitted = False
         for claimed in claims:
             gf = verify_candidate(self.state.store, claimed)

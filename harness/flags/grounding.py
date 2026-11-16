@@ -79,6 +79,7 @@ class Evidence:
     source: str          # e.g. "bash:cat flag", "pwn:recv", "http:GET /", "file:out.bin"
     data: bytes          # raw bytes exactly as produced
     seq: int             # order captured
+    cmd: str = ""        # the tool arguments that produced it
 
 
 @dataclass
@@ -114,7 +115,7 @@ class EvidenceStore:
         # never discards a flag we already grounded.
         self._latched: dict[str, GroundedFlag] = {}
 
-    def record(self, source: str, data: bytes | str) -> list[GroundedFlag]:
+    def record(self, source: str, data: bytes | str, cmd: str = "") -> list[GroundedFlag]:
         """Add one observation. Returns any *newly* grounded flags it contained.
 
         Also scans across the boundary with the previous chunk from the same
@@ -123,7 +124,7 @@ class EvidenceStore:
         if isinstance(data, str):
             data = data.encode("utf-8", "surrogatepass")
         self._seq += 1
-        ev = Evidence(source=source, data=data, seq=self._seq)
+        ev = Evidence(source=source, data=data, seq=self._seq, cmd=cmd)
         self._items.append(ev)
         self._bytes += len(data)
 
@@ -156,6 +157,22 @@ class EvidenceStore:
     def grounded_flags(self) -> list[GroundedFlag]:
         """All flags ever found in evidence (latched, order of first sighting)."""
         return list(self._latched.values())
+
+    def contains_independent(self, value: str) -> GroundedFlag | None:
+        """Is `value` in the output of a command that did not itself contain it?
+        `echo s3cretpass` proves nothing; aircrack-ng printing it does. Used for
+        answers the model submits explicitly (submit_flag)."""
+        value = value.strip()
+        if not value:
+            return None
+        needle = value.encode("utf-8", "surrogatepass")
+        for ev in self._items:
+            if value in ev.cmd:
+                continue
+            if ev.data.find(needle) != -1:
+                return GroundedFlag(flag=value, raw=needle, source=ev.source,
+                                    evidence_seq=ev.seq)
+        return None
 
     def contains(self, flag: str) -> GroundedFlag | None:
         """Is this exact flag present in evidence? Used to verify a model claim.

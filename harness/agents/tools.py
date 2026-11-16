@@ -504,6 +504,32 @@ def _unescape(s: str) -> bytes:
 # Tool profiles                                                               #
 # --------------------------------------------------------------------------- #
 
+class SubmitFlagTool(Tool):
+    """Submit an answer that is not flag-shaped (a password, a name, a number).
+
+    CTF{...} flags are submitted automatically the moment they appear in tool
+    output. Some challenges ask for something else: in rehearsal the agent
+    cracked a WPA2 handshake in 49 seconds (aircrack-ng: KEY FOUND! [ s3cretpass ])
+    and then repeated the password for the rest of its budget, because nothing
+    could submit it. The solver handles this tool (it owns the submitter and
+    the evidence), so run() is never reached in a solve."""
+
+    name = "submit_flag"
+    description = ("Submit the challenge's answer when it is NOT in the usual flag "
+                   "format, e.g. a password or value the challenge asks for. Give it "
+                   "exactly as it appeared in real tool output. CTF{...}-style flags are "
+                   "submitted automatically; you do not need this tool for them.")
+
+    def input_schema(self) -> dict:
+        return {"type": "object", "properties": {
+            "flag": {"type": "string", "description": "the exact answer"},
+        }, "required": ["flag"]}
+
+    def run(self, args: dict, ctx: ToolContext) -> ToolResult:
+        return ToolResult(self.name, b"", "submit_flag:unhandled",
+                          error="submit_flag is handled by the solver")
+
+
 @dataclass
 class ToolProfile:
     """A named set of tools handed to a specialist."""

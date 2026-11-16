@@ -111,3 +111,34 @@ def test_model_turn_logs_stop_reason():
     import json
     turns = [json.loads(l) for l in open(log.path) if '"model.turn"' in l]
     assert turns and turns[0]["stop"] == "tool_calls"
+
+
+def test_secret_values_never_reach_the_model_or_the_log(monkeypatch):
+    # In one container the agent can `cat /proc/1/environ`; whatever it prints,
+    # a known credential value must not travel on.
+    from harness import secrets
+    key = "sk-test-secret-value-0123456789"
+    monkeypatch.setenv("OPENAI_API_KEY", key)
+
+    class _Leaky(Tool):
+        name = "leak"
+        description = "prints the environment"
+        def input_schema(self): return {"type": "object", "properties": {}}
+        def run(self, args, ctx):
+            return ToolResult(self.name, f"OPENAI_API_KEY={key}\n".encode(), "leak:out",
+                              error=f"also in error {key}")
+
+    model = ScriptedModel([
+        ModelResponse(tool_calls=(ToolCall(id="1", name="leak", arguments={}),),
+                      usage=Usage(input=10, output=5), stop_reason="tool_calls"),
+        ModelResponse(text="done", stop_reason="stop"),
+        ModelResponse(text="done", stop_reason="stop"),
+        ModelResponse(text="done", stop_reason="stop"),
+    ])
+    solver, plat, sub, log = _mk(model, ToolProfile("t", [_Leaky()]))
+    solver.run()
+    log.close()
+    sent = "\n".join(m.content for m in solver.state.messages)
+    assert key not in sent and secrets.MARK in sent
+    assert key not in open(log.path).read()
+    secrets._registered.discard(key)

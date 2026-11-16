@@ -123,12 +123,13 @@ def make_platform(config: Config):
     if config.platform == "benchmark":
         from .platforms.benchmark import BenchmarkPlatform
         return BenchmarkPlatform(config.fixtures_root)
-    if config.platform == "mcp":
+    if config.platform in ("cyberedu", "mcp"):
         from .platforms.cyberedu_mcp import CyberEduMcpPlatform
-        if not config.contest_id:
-            raise ValueError("contest_id required for the mcp platform")
-        # Cookie read from CYBEREDU_SESSION inside the adapter; never from config.
-        return CyberEduMcpPlatform(contest_id=config.contest_id)
+        # The practice catalogue unless a contest slug is given. The cookie is
+        # read from CYBEREDU_SESSION_COOKIE inside the adapter, never from config.
+        return CyberEduMcpPlatform(
+            tenant=os.environ.get("CTF_CYBEREDU_TENANT", "cyberedu"),
+            contest_slug=config.contest_id or None)
     if ":" in config.platform:
         # module:Class — an adapter written for the organizers' starter kit, so
         # adding one needs no edit here.

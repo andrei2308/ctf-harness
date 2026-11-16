@@ -22,6 +22,7 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 
+from ..secrets import scrub, scrub_text
 from ..flags.grounding import (EvidenceStore, GroundedFlag, flag_pattern,
                                verify_candidate)
 from ..flags.submit import FlagSubmitter, _preview
@@ -201,6 +202,9 @@ class Solver:
                 res = ToolResult(tc.name, b"", f"{tc.name}:exception", error=repr(e))
         took = time.monotonic() - t0
         self.budget.charge_time(cid, took)
+        # No credential value goes on to the model, the log or the evidence
+        # store, even if a command printed one (harness/secrets.py).
+        res = replace(res, output=scrub(res.output), error=scrub_text(res.error))
 
         # Record REAL output as evidence and stream any grounded flag now.
         # Reference material (knowledge base, summaries) is NOT evidence: an

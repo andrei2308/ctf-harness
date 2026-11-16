@@ -1,0 +1,25 @@
+# Rehearsal image: the submission image plus the CyberEDU MCP server.
+#
+# NEVER UPLOAD THIS IMAGE. It exists only to rehearse on CyberEDU's practice
+# catalogue from inside the same toolchain the contest runs.
+#
+#   docker build -f Dockerfile.contest   -t ctf-harness:latest .
+#   docker build -f Dockerfile.rehearsal -t ctf-harness:rehearsal .
+#   docker run --rm -e CYBEREDU_SESSION_COOKIE -e OPENAI_API_KEY ... \
+#     -e CTF_PLATFORM=cyberedu ctf-harness:rehearsal --challenge <id>
+#
+# The server gets its own venv, outside the agent's PATH, pinned to the commits
+# validated on 2026-11-16. It needs mcp<2: on the 2.x SDK it crashes at start
+# ('Server' object has no attribute 'list_tools'). The harness side needs the
+# same mcp client library in its venv to talk to the server.
+ARG BASE=ctf-harness:latest
+FROM ${BASE}
+ARG CYBEREDU_CLIENT_REF=913ccf1750f3da0c8a2c520b3d24ef56b83d8785
+ARG CYBEREDU_MCP_REF=f81b6899ad83c2f5abad75c63fde05751335c1c0
+RUN /usr/bin/python3 -m venv /opt/cyberedu-mcp \
+ && /opt/cyberedu-mcp/bin/pip install --no-cache-dir "mcp<2" \
+      "cyberedu-client @ git+https://github.com/CyberEDU-Cyber-Range/cyberedu-client@${CYBEREDU_CLIENT_REF}" \
+      "cyberedu-mcp @ git+https://github.com/CyberEDU-Cyber-Range/cyberedu-mcp@${CYBEREDU_MCP_REF}" \
+ && /opt/venv/bin/pip install --no-cache-dir "mcp<2"
+ENV CTF_CYBEREDU_MCP_PYTHON=/opt/cyberedu-mcp/bin/python \
+    CTF_PLATFORM=cyberedu

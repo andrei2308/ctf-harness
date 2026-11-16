@@ -1,47 +1,54 @@
-"""CyberEDU MCP Platform adapter.
+"""CyberEDU platform adapter, through the official MCP server.
 
-Maps the Platform interface onto the official `CyberEDU-Cyber-Range/cyberedu-mcp`
-server (`python -m cyberedu_mcp`, stdio transport). Contest-scoped tool mapping:
+The server is `github.com/CyberEDU-Cyber-Range/cyberedu-mcp` (`python -m
+cyberedu_mcp`, stdio). It exposes every `CyberEduClient` method as a tool named
+`cyberedu_<method>`. Tool names, arguments and response shapes below were read
+from that source and checked against the live API on 2026-11-16.
 
-    list_challenges  -> cyberedu_list_contests / get_contest_challenge(s)
-    get_challenge    -> get_contest_challenge
-    download_files   -> download_contest_file
-    start_instance   -> start_contest_service (+ status/extend/restart)
-    get_conn_info    -> get_contest_service status
-    submit_flag      -> submit_contest_flag
-    (get_contest_flag exists for flag retrieval where the platform exposes it)
+Two modes:
+  * practice catalogue (default): `cyberedu_get_challenge`, `_download_file`,
+    `_start_service`, `_get_service_status`, `_extend_service`, `_submit_flag`.
+  * contest (`contest_slug` set): the `_contest_` variants of the same calls,
+    which take `contest_slug`. Written from the server source; not yet run
+    against a live contest.
 
-Two cautions this adapter is written around (both OPEN with organizers):
+Rules this adapter is built around:
+  * Never read a flag. The server has `get_flag` / `get_contest_flag`; they are
+    refused here (`FORBIDDEN_TOOLS`) whatever the caller asks.
+  * The cookie is read from CYBEREDU_SESSION_COOKIE (the variable the server
+    reads), removed from this process's environment, registered with
+    harness.secrets for scrubbing, and passed only to the server subprocess,
+    whose environment is otherwise minimal. The server gets a private, empty
+    HOME, so it does not persist the cookie to ~/.cyberedu-mcp/session.json.
+  * Only the harness talks to the server. The agent's tools never see it.
+  * The server cannot stop an instance (it has start, status, extend and
+    restart, no stop). An instance runs until CyberEDU's lifetime ends it
+    (60 minutes as observed). `close()` says so in the log.
 
-  1. Credentials. Auth is a browser session cookie (`cyberedu_session`), not an
-     API token, and it is account-bound. It is read ONLY from the environment
-     (`CYBEREDU_SESSION`) and passed to the server subprocess — never read from a
-     committed file and never written anywhere this harness ships. For the live
-     contest the organizers must inject a scoped contest session into the
-     sandbox; we read it from env there too. For LOCAL rehearsal you may let the
-     server use its own `~/.cyberedu-mcp/session.json`, which must never be
-     committed.
-
-  2. "No internet" vs calling cyber-edu.co. If the sanctioned runtime mounts
-     challenges locally, use FilesTargetPlatform instead; do not hardcode a call
-     to the public site. This adapter is primarily the local test rig to rehearse
-     enumerate->solve->submit against past challenges with your own cookie.
-
-Response shapes vary; extraction below is deliberately tolerant and every
-load-bearing field name is marked CONFIRM — verify against the live server before
-relying on it in the contest.
+A challenge's flags are questions with ids (`flags: [{"id": 4744}]`); a
+submission names the flag id. A candidate is tried against each flag id not yet
+accepted, in order, until one accepts it.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import shutil
+import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Any, Protocol
 
+from .. import secrets
 from .base import (Challenge, ChallengeKind, ConnInfo, Platform, PlatformError,
                    SubmitResult)
+
+COOKIE_ENV = "CYBEREDU_SESSION_COOKIE"
+# Flag-retrieval tools. Never called, whatever happens.
+FORBIDDEN_TOOLS = frozenset({"cyberedu_get_flag", "cyberedu_get_contest_flag"})
+INSTANCE_POLL_SECONDS = 5.0
 
 
 class McpTransport(Protocol):
@@ -53,14 +60,15 @@ class StdioMcpTransport:
     """Runs an MCP stdio server in a background asyncio loop and exposes a sync
     call_tool(). Lazy-imports the `mcp` client so the harness imports without it."""
 
-    def __init__(self, command: str = "python", args: list[str] | None = None,
-                 env: dict | None = None):
+    def __init__(self, command: str, args: list[str], env: dict[str, str],
+                 timeout: float = 120.0):
         self._command = command
-        self._args = args or ["-m", "cyberedu_mcp"]
-        self._env = {**os.environ, **(env or {})}
+        self._args = args
+        self._env = env
+        self._timeout = timeout
         self._loop = None
-        self._thread = None
         self._session = None
+        self._stop_event = None
         self._ready = threading.Event()
         self._err: Exception | None = None
         self._start()
@@ -70,14 +78,12 @@ class StdioMcpTransport:
 
         def runner() -> None:
             try:
-                import mcp  # noqa: F401
                 from mcp import ClientSession, StdioServerParameters
                 from mcp.client.stdio import stdio_client
-            except ImportError as e:  # pragma: no cover
-                self._err = PlatformError("mcp client not installed; `pip install mcp`")
+            except ImportError:
+                self._err = PlatformError("mcp client not installed (pip install 'mcp<2')")
                 self._ready.set()
                 return
-
             loop = asyncio.new_event_loop()
             self._loop = loop
             asyncio.set_event_loop(loop)
@@ -88,58 +94,44 @@ class StdioMcpTransport:
                 async with stdio_client(params) as (read, write):
                     async with ClientSession(read, write) as session:
                         await session.initialize()
+                        self._stop_event = asyncio.Event()
                         self._session = session
                         self._ready.set()
-                        # Keep the session open until close() stops the loop.
-                        stop = asyncio.Event()
-                        self._stop_event = stop
-                        await stop.wait()
+                        await self._stop_event.wait()
 
             try:
                 loop.run_until_complete(main())
-            except Exception as e:  # pragma: no cover
-                self._err = e
+            except Exception as e:  # noqa: BLE001
+                self._err = PlatformError(f"MCP server failed: {e}")
                 self._ready.set()
 
-        self._thread = threading.Thread(target=runner, name="mcp-loop", daemon=True)
-        self._thread.start()
-        self._ready.wait(timeout=30)
+        threading.Thread(target=runner, name="mcp-loop", daemon=True).start()
+        self._ready.wait(timeout=60)
         if self._err:
             raise self._err
         if self._session is None:
-            raise PlatformError("MCP session failed to initialise within 30s")
+            raise PlatformError("MCP session did not initialise within 60s")
 
     def call_tool(self, name: str, args: dict) -> Any:
         import asyncio
         if self._session is None or self._loop is None:
             raise PlatformError("MCP transport not ready")
-
-        async def _call():
-            return await self._session.call_tool(name, args)
-
-        fut = asyncio.run_coroutine_threadsafe(_call(), self._loop)
+        fut = asyncio.run_coroutine_threadsafe(self._session.call_tool(name, args), self._loop)
         try:
-            result = fut.result(timeout=120)
+            result = fut.result(timeout=self._timeout)
         except Exception as e:  # noqa: BLE001
             raise PlatformError(f"MCP call {name} failed: {e}") from e
         return _unwrap(result)
 
     def close(self) -> None:
-        if self._loop and getattr(self, "_stop_event", None):
+        if self._loop and self._stop_event is not None:
             self._loop.call_soon_threadsafe(self._stop_event.set)
 
 
 def _unwrap(result: Any) -> Any:
-    """Turn an MCP CallToolResult into plain data. Prefers structured content,
-    then JSON-parsed text blocks, then raw text."""
-    structured = getattr(result, "structuredContent", None)
-    if structured:
-        return structured
-    content = getattr(result, "content", None) or []
-    texts = []
-    for block in content:
-        if getattr(block, "type", None) == "text":
-            texts.append(getattr(block, "text", ""))
+    """CallToolResult -> data. The server returns one text block of JSON."""
+    texts = [getattr(b, "text", "") for b in (getattr(result, "content", None) or [])
+             if getattr(b, "type", None) == "text"]
     joined = "\n".join(texts)
     try:
         return json.loads(joined)
@@ -147,152 +139,235 @@ def _unwrap(result: Any) -> Any:
         return {"text": joined}
 
 
-def _first(d: dict, *keys: str, default=None):
-    """Tolerant key lookup across naming variants (CONFIRM real field names)."""
-    for k in keys:
-        if isinstance(d, dict) and k in d and d[k] is not None:
-            return d[k]
-    return default
-
-
 class CyberEduMcpPlatform(Platform):
-    def __init__(self, contest_id: str, transport: McpTransport | None = None,
-                 session_cookie: str | None = None):
-        self.contest_id = contest_id
-        cookie = session_cookie or os.environ.get("CYBEREDU_SESSION")
-        # The cookie is handed to the server via env only; never persisted here.
-        env = {"CYBEREDU_SESSION": cookie} if cookie else {}
-        self._transport = transport or StdioMcpTransport(env=env)
+    def __init__(self, tenant: str = "cyberedu", contest_slug: str | None = None,
+                 transport: McpTransport | None = None,
+                 session_cookie: str | None = None,
+                 instance_wait: float = 240.0):
+        self.tenant = tenant
+        self.contest_slug = contest_slug or None
+        self.instance_wait = instance_wait
+        self._challenges: dict[str, dict] = {}     # raw detail by id
+        self._accepted: dict[str, set[int]] = {}   # flag ids accepted, by challenge
+        self._started: set[str] = set()
+        self._home: str | None = None
+        if transport is None:
+            # Take the cookie out of this process's environment, so nothing
+            # started later can inherit it.
+            cookie = session_cookie or os.environ.pop(COOKIE_ENV, None)
+            if not cookie:
+                raise PlatformError(f"{COOKIE_ENV} is not set")
+            secrets.register(cookie)
+            self._home = tempfile.mkdtemp(prefix="cyberedu-mcp-")
+            env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": self._home,
+                   COOKIE_ENV: cookie, "CYBEREDU_TENANT": tenant}
+            python = os.environ.get("CTF_CYBEREDU_MCP_PYTHON", "python")
+            transport = StdioMcpTransport(python, ["-m", "cyberedu_mcp"], env)
+        self._t = transport
 
-    # The tool names below follow the documented server; CONFIRM arg schemas.
+    # --- transport -----------------------------------------------------------
+
+    def _call(self, tool: str, args: dict) -> Any:
+        if tool in FORBIDDEN_TOOLS:
+            raise PlatformError(f"refusing flag-retrieval tool {tool}")
+        data = self._t.call_tool(tool, args)
+        if isinstance(data, dict) and "error" in data:
+            status = data.get("status_code")
+            raise PlatformError(f"{tool}: {data.get('error')}"
+                                + (f" {status}" if status else "")
+                                + f": {str(data.get('response') or data.get('message'))[:200]}",
+                                ) from None if status is None else _HttpError(status)
+        return data
+
+    def _tool(self, base: str) -> str:
+        return f"cyberedu_{base.replace('X', 'contest_' if self.contest_slug else '')}"
+
+    def _args(self, challenge_id: str, **extra) -> dict:
+        args = {"challenge_id": challenge_id, **extra}
+        if self.contest_slug:
+            args["contest_slug"] = self.contest_slug
+        return args
+
+    # --- Platform ------------------------------------------------------------
 
     def list_challenges(self) -> list[Challenge]:
-        data = self._transport.call_tool(
-            "get_contest_challenges", {"contest_id": self.contest_id})
-        items = data if isinstance(data, list) else _first(data, "challenges", "items", default=[])
-        return [self._to_challenge(it) for it in items]
+        if self.contest_slug:
+            data = self._call("cyberedu_get_contest", {"contest_slug": self.contest_slug})
+            items = data.get("challenges", []) if isinstance(data, dict) else data
+        else:
+            items = self._call("cyberedu_list_challenges", {})
+        return [self._to_challenge(it) for it in (items or []) if isinstance(it, dict)]
 
     def get_challenge(self, challenge_id: str) -> Challenge:
-        data = self._transport.call_tool(
-            "get_contest_challenge",
-            {"contest_id": self.contest_id, "challenge_id": challenge_id})
-        return self._to_challenge(data if isinstance(data, dict) else _first(data, "challenge", default={}))
+        data = self._call(self._tool("get_Xchallenge"), self._args(challenge_id))
+        if not isinstance(data, dict) or not data.get("id"):
+            raise PlatformError(f"no such challenge: {challenge_id}")
+        self._challenges[challenge_id] = data
+        return self._to_challenge(data)
+
+    def _detail(self, challenge_id: str) -> dict:
+        if challenge_id not in self._challenges:
+            self.get_challenge(challenge_id)
+        return self._challenges[challenge_id]
 
     def download_files(self, challenge_id: str, dest: Path) -> list[Path]:
-        dest = Path(dest)
+        detail = self._detail(challenge_id)
+        if not self.contest_slug and not detail.get("is_subscribed"):
+            # Subscribing unlocks files and flags, and may cost credits: a
+            # decision for the account owner, never made here.
+            raise PlatformError("not subscribed to this challenge; subscribe on the site first")
+        dest = Path(dest).resolve()
         dest.mkdir(parents=True, exist_ok=True)
-        data = self._transport.call_tool(
-            "download_contest_file",
-            {"contest_id": self.contest_id, "challenge_id": challenge_id})
-        # CONFIRM: server may return file paths it wrote, base64 blobs, or a list
-        # of {name, content_b64}. Handle the two most likely shapes.
         written: list[Path] = []
-        files = _first(data, "files", "attachments", default=[]) if isinstance(data, dict) else data
-        for f in files or []:
-            if isinstance(f, str) and Path(f).is_file():
-                target = dest / Path(f).name
-                target.write_bytes(Path(f).read_bytes())
-                written.append(target)
-            elif isinstance(f, dict):
-                name = _first(f, "name", "filename", default="file.bin")
-                b64 = _first(f, "content_b64", "base64", "data")
-                path = _first(f, "path")
-                target = dest / Path(name).name
-                if b64:
-                    import base64
-                    target.write_bytes(base64.b64decode(b64))
-                    written.append(target)
-                elif path and Path(path).is_file():
-                    target.write_bytes(Path(path).read_bytes())
-                    written.append(target)
+        for media in detail.get("media") or []:
+            data = self._call(self._tool("download_Xfile"),
+                              self._args(challenge_id, file_id=str(media["id"]),
+                                         save_path=str(dest)))
+            path = Path(str(data.get("path", ""))).resolve() if isinstance(data, dict) else None
+            if not path or not path.is_file():
+                raise PlatformError(f"download of file {media.get('id')} returned no file")
+            if dest not in path.parents:
+                # The server names the file from a response header; keep it in dest.
+                safe = dest / Path(str(media.get("file_name") or path.name)).name
+                shutil.move(str(path), safe)
+                path = safe
+            written.append(path)
         return written
 
     def start_instance(self, challenge_id: str) -> ConnInfo:
-        data = self._transport.call_tool(
-            "start_contest_service",
-            {"contest_id": self.contest_id, "challenge_id": challenge_id})
-        return self._to_conn(data)
+        status = self._status(challenge_id)
+        if status is None:
+            return ConnInfo()                     # no service: files only
+        if not _running(status):
+            self._call(self._tool("start_Xservice"), self._args(challenge_id))
+            self._started.add(challenge_id)
+            deadline = time.monotonic() + self.instance_wait
+            while not _running(status):
+                if time.monotonic() > deadline:
+                    raise PlatformError(f"instance not running after {self.instance_wait:.0f}s: "
+                                        f"{status.get('deploymentStatus')}")
+                time.sleep(INSTANCE_POLL_SECONDS)
+                status = self._status(challenge_id) or {}
+        return self._to_conn(status, self._detail(challenge_id))
 
     def get_conn_info(self, challenge_id: str) -> ConnInfo:
-        data = self._transport.call_tool(
-            "get_contest_service_status",
-            {"contest_id": self.contest_id, "challenge_id": challenge_id})
-        return self._to_conn(data)
+        status = self._status(challenge_id)
+        if status is None or not _running(status):
+            return ConnInfo()
+        return self._to_conn(status, self._detail(challenge_id))
 
     def extend_instance(self, challenge_id: str) -> ConnInfo:
-        data = self._transport.call_tool(
-            "extend_contest_service",
-            {"contest_id": self.contest_id, "challenge_id": challenge_id})
-        return self._to_conn(data)
+        self._call(self._tool("extend_Xservice"), self._args(challenge_id))
+        return self.get_conn_info(challenge_id)
 
     def submit_flag(self, challenge_id: str, flag: str) -> SubmitResult:
-        data = self._transport.call_tool(
-            "submit_contest_flag",
-            {"contest_id": self.contest_id, "challenge_id": challenge_id, "flag": flag})
-        if not isinstance(data, dict):
-            data = {"text": str(data)}
-        accepted = bool(_first(data, "correct", "accepted", "success", "solved", default=False))
-        already = bool(_first(data, "already_solved", "already", default=False))
-        # Whole-challenge completion, if the server distinguishes it from a single
-        # correct flag (CONFIRM field names). Falls back to the submitter's count.
-        remaining = _first(data, "remaining", "flags_remaining")
-        challenge_solved = bool(_first(data, "challenge_solved", "fully_solved",
-                                       "completed", default=False)) \
-            or (remaining is not None and int(remaining) == 0)
-        return SubmitResult(accepted=accepted, already_solved=already,
-                            challenge_solved=challenge_solved,
-                            message=str(_first(data, "message", "msg", "text", default="")),
-                            raw=data)
+        detail = self._detail(challenge_id)
+        ids = [int(f["id"]) for f in detail.get("flags") or [] if "id" in f]
+        if not ids:
+            raise PlatformError("challenge lists no flag ids to submit against")
+        done = self._accepted.setdefault(challenge_id, set())
+        open_ids = [i for i in ids if i not in done]
+        if not open_ids:
+            return SubmitResult(accepted=False, already_solved=True, challenge_solved=True,
+                                message="every flag of this challenge is already accepted")
+        last: dict = {}
+        for flag_id in open_ids:
+            data = self._call(self._tool("submit_Xflag"),
+                              self._args(challenge_id, flag_id=str(flag_id), flag_value=flag))
+            last = data if isinstance(data, dict) else {"text": str(data)}
+            if _accepted(last):
+                done.add(flag_id)
+                return SubmitResult(accepted=True, challenge_solved=len(done) == len(ids),
+                                    message=str(last.get("message", "")), raw=last)
+        return SubmitResult(accepted=False, message=str(last.get("message", "")), raw=last)
 
     def close(self) -> None:
-        self._transport.close()
+        try:
+            self._t.close()
+        finally:
+            if self._home:
+                shutil.rmtree(self._home, ignore_errors=True)
 
-    # --- parsing helpers ---------------------------------------------------
+    @property
+    def started_instances(self) -> set[str]:
+        """Instances this adapter started. The server cannot stop them; they
+        end at CyberEDU's lifetime."""
+        return set(self._started)
+
+    # --- helpers -------------------------------------------------------------
+
+    def _status(self, challenge_id: str) -> dict | None:
+        """Service status, or None when the challenge has no service (the API
+        answers 400 for a files-only challenge)."""
+        try:
+            data = self._call(self._tool("get_Xservice_status"), self._args(challenge_id))
+        except PlatformError as e:
+            if isinstance(e.__cause__, _HttpError) and e.__cause__.status == 400:
+                return None
+            raise
+        return data if isinstance(data, dict) else {}
 
     @staticmethod
     def _to_challenge(it: dict) -> Challenge:
-        if not isinstance(it, dict):
-            it = {}
-        cat = str(_first(it, "category", "type", default=""))
-        flags = _first(it, "flags", "flag_slots")
-        if isinstance(flags, list) and flags:
-            flags_required = len(flags)
-        else:
-            flags_required = int(_first(it, "flags_required", "num_flags",
-                                        "flag_count", default=1) or 1)
+        tags = [t.get("name", "") for t in it.get("tags") or [] if isinstance(t, dict)]
+        category = ", ".join(t for t in tags if t)
+        flags = it.get("flags")
         return Challenge(
-            id=str(_first(it, "id", "challenge_id", "slug", default="")),
-            name=str(_first(it, "name", "title", default="")),
-            kind=_kind_from_category(cat),
-            category=cat,
-            points=_first(it, "points", "score", "value"),
-            description=str(_first(it, "description", "desc", "statement", default="")),
-            flags_required=flags_required,
-            meta=it,
+            id=str(it.get("id", "")),
+            name=str(it.get("title", "")),
+            kind=_kind_from_tags(tags),
+            category=category,
+            points=_int(it.get("points")),
+            description=str(it.get("description") or ""),
+            flags_required=len(flags) if isinstance(flags, list) and flags else 1,
+            meta={k: it.get(k) for k in ("difficulty", "is_subscribed", "is_owned", "tenant")},
         )
 
     @staticmethod
-    def _to_conn(data: Any) -> ConnInfo:
-        if not isinstance(data, dict):
+    def _to_conn(status: dict, detail: dict) -> ConnInfo:
+        address = str(status.get("address") or status.get("formattedAddress") or "")
+        host, _, port = address.rpartition(":")
+        if not host:
             return ConnInfo()
-        conn = _first(data, "connection", "service", default=data)
-        if not isinstance(conn, dict):
-            conn = data
-        return ConnInfo(
-            host=_first(conn, "host", "ip", "hostname"),
-            port=_first(conn, "port"),
-            url=_first(conn, "url", "link"),
-            expires_at=_first(conn, "expires_at", "expiry"),
-            meta=conn,
-        )
+        url = None
+        if _kind_from_tags([t.get("name", "") for t in detail.get("tags") or []
+                            if isinstance(t, dict)]) == ChallengeKind.WEB:
+            url = f"http://{address}"
+        expires = (status.get("terminate_at") or {}).get("timestamp")
+        return ConnInfo(host=host, port=_int(port), url=url,
+                        expires_at=float(expires) if expires else None,
+                        meta={"service_type": status.get("service_type"),
+                              "addresses": status.get("formattedAddresses")})
 
 
-def _kind_from_category(category: str) -> ChallengeKind:
-    c = category.lower()
-    if any(k in c for k in ("web",)):
+class _HttpError(Exception):
+    def __init__(self, status: int):
+        super().__init__(status)
+        self.status = status
+
+
+def _running(status: dict) -> bool:
+    return status.get("deploymentStatus") == "running" and bool(status.get("address"))
+
+
+def _accepted(data: dict) -> bool:
+    # Checked against a live submission on 2026-11-16; see the tests.
+    return str(data.get("status", "")).lower() == "success"
+
+
+def _int(v: Any) -> int | None:
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _kind_from_tags(tags: list[str]) -> ChallengeKind:
+    t = " ".join(tags).lower()
+    if "web" in t:
         return ChallengeKind.WEB
-    if any(k in c for k in ("pwn", "exploit", "binary", "misc")):
+    if any(k in t for k in ("pwn", "exploit", "network")):
         return ChallengeKind.INTERACTIVE
-    if any(k in c for k in ("rev", "crypto", "forensic", "stego", "osint")):
+    if any(k in t for k in ("reverse", "crypto", "forensic", "stego", "osint", "misc")):
         return ChallengeKind.STATIC
     return ChallengeKind.UNKNOWN

@@ -132,7 +132,7 @@ def run_challenge(*, challenge: Challenge, platform: Platform, ladder: Ladder,
         model at `at_rung` from the transcript it is about to lose."""
         m = model_factory(ladder.rung(at_rung).spec)
         try:
-            recap = restart_recap(m, state, specialist.profile().schemas(), budget, log)
+            recap = restart_recap(m, state, specialist.profile_for(conn).schemas(), budget, log)
         finally:
             m.close()
         state.restart_conversation(sys_p, task_p, recap)
@@ -147,7 +147,7 @@ def run_challenge(*, challenge: Challenge, platform: Platform, ladder: Ladder,
             break
         attempts += 1
         model = model_factory(ladder.rung(rung).spec)
-        solver = Solver(model=model, profile=specialist.profile(), state=state,
+        solver = Solver(model=model, profile=specialist.profile_for(conn), state=state,
                         budget=budget, log=log, submitter=submitter,
                         max_iterations=ladder.rung(rung).max_iterations,
                         plan_first=plan_first)

@@ -62,3 +62,21 @@ def test_pwn_profile_has_service_tools_and_gdb():
 
 def test_web_profile_has_http():
     assert "http" in set(WebSpecialist().profile().by_name())
+
+
+def test_network_challenges_go_to_forensics_not_pwn():
+    # hidden-cipher (rehearsal): "Network" + a live box went to pwn by its port.
+    from harness.platforms.base import ConnInfo
+    ch = Challenge(id="c", name="hidden-cipher", category="Network, D-CTF 2025 Quals")
+    spec = route(ch, ConnInfo(host="10.0.0.1", port=2222))
+    assert spec.profile().name == "forensics"
+
+
+def test_a_live_target_brings_its_tools_whatever_the_specialist():
+    from harness.platforms.base import ConnInfo
+    ch = Challenge(id="c", name="x", category="forensics")
+    spec = route(ch, None)
+    names = lambda p: {t.name for t in p.tools}
+    assert "connect" not in names(spec.profile_for(None))
+    assert {"connect", "send", "recv"} <= names(spec.profile_for(ConnInfo(host="h", port=1)))
+    assert "http" in names(spec.profile_for(ConnInfo(url="http://h:1")))

@@ -59,6 +59,20 @@ class Specialist(abc.ABC):
     @abc.abstractmethod
     def system_prompt(self) -> str: ...
 
+    def profile_for(self, conn: ConnInfo | None) -> ToolProfile:
+        """This specialist's tools, plus what a live target needs: connect/send/
+        recv for a host:port, http for a URL. Routing goes by category first,
+        so a forensics or crypto challenge can come with a service and must not
+        lose the tools to talk to it (rehearsal: hidden-cipher)."""
+        prof = self.profile()
+        names = {t.name for t in prof.tools}
+        extra = []
+        if conn and conn.host and conn.port and "connect" not in names:
+            extra += [ServiceConnectTool(), ServiceSendTool(), ServiceRecvTool()]
+        if conn and conn.url and "http" not in names:
+            extra.append(HttpTool())
+        return ToolProfile(prof.name, prof.tools + extra) if extra else prof
+
     def task_prompt(self, challenge: Challenge, work_dir: Path,
                     conn: ConnInfo | None, files: list[Path],
                     available: set[str] | None = None) -> str:
@@ -192,7 +206,11 @@ class ForensicsSpecialist(Specialist):
             "- Memory image → **Volatility 3** (`volatility` tool: windows.pslist, "
             "cmdline, filescan/dumpfiles, netscan; linux.* for Linux). Disk image "
             "→ `sleuthkit` (fls/icat), `testdisk`/`photorec`.\n"
-            "- PCAP → `tshark` (follow streams, export objects), `scapy`.\n"
+            "- PCAP → `tshark` (follow streams, export objects), `scapy`. WPA "
+            "handshake → `aircrack-ng -w /usr/share/wordlists/rockyou.txt`. A box "
+            "given as SSH credentials → log in and look around; if `ssh`/`sshpass` "
+            "are missing, script it with `paramiko`. A port-knock sequence in a "
+            "capture is something to replay, not only to read.\n"
             "- Images/audio stego: `zsteg` (PNG/BMP LSB), `steghide`/`stegseek` "
             "(JPEG, crack with rockyou), `outguess`, `stegsnow`; `zbar` for QR; "
             "`sox`/spectrogram and `multimon-ng` for audio. PDFs: `pdf-parser`, "
@@ -338,6 +356,9 @@ _CATEGORY_RULES: list[tuple[tuple[str, ...], Specialist]] = [
     (("rev", "reversing", "reverse"), _REV),
     (("crypto", "cryptography"), _CRYPTO),
     (("forensic", "stego", "steg"), _FORENSICS),
+    # Network challenges are captures, handshakes and boxes to log into: the
+    # forensics playbook, not pwn (hidden-cipher was sent to pwn by its port).
+    (("network", "wireless", "wifi", "pcap"), _FORENSICS),
     (("blockchain", "smart contract", "solidity", "web3", "evm", "defi"), _BLOCKCHAIN),
     (("pyjail", "jail"), _PYJAIL),
     (("web", "http"), _WEB),

@@ -227,9 +227,14 @@ class CyberEduMcpPlatform(Platform):
             path = Path(str(data.get("path", ""))).resolve() if isinstance(data, dict) else None
             if not path or not path.is_file():
                 raise PlatformError(f"download of file {media.get('id')} returned no file")
-            if dest not in path.parents:
-                # The server names the file from a response header; keep it in dest.
-                safe = dest / Path(str(media.get("file_name") or path.name)).name
+            # The server names the file from a response header that the API does
+            # not send, so files arrived as "downloaded_file". The challenge
+            # lists the real name; its extension is a clue. Keep it in dest.
+            want = Path(str(media.get("file_name") or path.name)).name or path.name
+            safe = dest / want
+            if path != safe:
+                if safe.exists():
+                    safe = dest / f"{media.get('id')}-{want}"
                 shutil.move(str(path), safe)
                 path = safe
             written.append(path)

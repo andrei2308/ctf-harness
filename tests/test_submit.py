@@ -118,3 +118,27 @@ def test_unreachable_grader_is_retried_with_backoff_then_abandoned():
         sub.flush_pending("c"); sub.submit("c", gf)
     assert Down.calls == sm.PENDING_MAX_ROUNDS
     assert sub.pending_count("c") == 0
+
+
+def test_submit_event_records_the_graders_message_without_the_flag():
+    import json, tempfile
+    from harness.flags.grounding import GroundedFlag
+    from harness.flags.submit import FlagSubmitter
+    from harness.platforms.base import Platform, SubmitResult
+    from harness.telemetry.run_log import RunLog
+
+    class P(Platform):
+        def list_challenges(self): return []
+        def get_challenge(self, c): ...
+        def download_files(self, c, d): return []
+        def start_instance(self, c): ...
+        def get_conn_info(self, c): ...
+        def submit_flag(self, c, f):
+            return SubmitResult(accepted=False, message=f"Incorrect flag {f}")
+
+    log = RunLog(tempfile.mkdtemp())
+    FlagSubmitter(P(), log).submit("c", GroundedFlag(flag="CTF{secret_value_123}",
+                                                     raw=b"", source="t", evidence_seq=1))
+    log.close()
+    ev = [json.loads(l) for l in open(log.path) if '"flag.submit"' in l][0]
+    assert ev["message"].startswith("Incorrect flag") and "secret_value_123" not in ev["message"]

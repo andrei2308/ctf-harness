@@ -211,7 +211,10 @@ class FlagSubmitter:
 
         self._log.event("flag.submit", challenge=challenge, accepted=result.accepted,
                         already=result.already_solved,
-                        challenge_solved=self.is_solved(challenge), progress=progress)
+                        challenge_solved=self.is_solved(challenge), progress=progress,
+                        # What the grader said: without it a rejected flag cannot
+                        # be told from a misread response.
+                        message=_preview_message(result.message, flag))
         return result
 
     def flush_pending(self, challenge: str) -> list[SubmitResult]:
@@ -253,3 +256,8 @@ def _preview(flag: str, keep: int = 8) -> str:
         shown = body[:keep]
         return f"{pre}{{{shown}{'…' if len(body) > keep else ''}}}"
     return flag[:keep] + ("…" if len(flag) > keep else "")
+
+
+def _preview_message(message: str, flag: str) -> str:
+    """The grader's message for the log, short, with the flag itself masked."""
+    return (message or "").replace(flag, _preview(flag))[:200]

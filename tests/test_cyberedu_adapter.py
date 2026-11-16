@@ -34,7 +34,9 @@ class FakeTransport:
     def call_tool(self, name, args):
         self.calls.append((name, dict(args)))
         if name == "cyberedu_download_file":
-            p = __import__("pathlib").Path(args["save_path"]) / "app.zip"
+            # Live: the API sends no filename header, so the server falls back
+            # to a generic name.
+            p = __import__("pathlib").Path(args["save_path"]) / "downloaded_file"
             p.write_bytes(b"zip")
             return {"type": "file_saved", "path": str(p), "size_bytes": 3}
         r = self.replies[name]
@@ -235,3 +237,17 @@ def test_a_5xx_on_submit_stays_retryable():
     p, _ = _plat({"cyberedu_submit_flag": bad})
     with pytest.raises(PlatformError):
         p.submit_flag(CID, "CTF{x}")
+
+
+def test_files_get_their_real_names(tmp_path):
+    p, _ = _plat({})
+    (path,) = p.download_files(CID, tmp_path)
+    assert path.name == "app.zip" and path.read_bytes() == b"zip"
+    assert not (tmp_path / "downloaded_file").exists()
+
+
+def test_a_name_from_the_platform_cannot_escape_the_work_dir(tmp_path):
+    evil = {**DETAIL, "media": [{"id": 7, "file_name": "../../etc/x.bin"}]}
+    p, _ = _plat({"cyberedu_get_challenge": evil})
+    (path,) = p.download_files(CID, tmp_path)
+    assert path.parent == tmp_path.resolve() and path.name == "x.bin"

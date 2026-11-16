@@ -48,8 +48,19 @@ class FakeTransport:
         self.closed = True
 
 
+# get_flag, trimmed from the live response: the question plus fields that must
+# never reach the agent.
+QUESTION = {"id": 3727, "question": "What is the flag", "description": "ctf{sha256(flag)}",
+            "options": [], "type": "value", "manual_review": False, "limit": 0,
+            "multiple": False, "found": False, "pending_review": False,
+            "value": "LAST-SUBMITTED-VALUE", "is_attempted": True, "points": 100,
+            "rejection_reason": "SECRET-REASON",
+            "hints": {"exists": True, "list": [{"id": 12, "title": "HINT-TITLE"}]}}
+
+
 def _plat(replies, **kw):
-    replies = {"cyberedu_get_challenge": DETAIL, **replies}
+    replies = {"cyberedu_get_challenge": DETAIL, "cyberedu_get_flag": QUESTION,
+               "cyberedu_get_contest_flag": QUESTION, **replies}
     t = FakeTransport(replies)
     return CyberEduMcpPlatform(transport=t, **kw), t
 
@@ -159,7 +170,7 @@ def test_contest_mode_uses_contest_tools_and_slug(tmp_path):
     assert name == "cyberedu_submit_contest_flag" and args["contest_slug"] == "dctf-26"
 
 
-def test_no_method_ever_calls_a_flag_tool(tmp_path, monkeypatch):
+def test_get_flag_is_only_used_to_read_questions(tmp_path, monkeypatch):
     monkeypatch.setattr(cm, "INSTANCE_POLL_SECONDS", 0)
     p, t = _plat({"cyberedu_list_challenges": [DETAIL],
                   "cyberedu_get_service_status": [NOT_FOUND, RUNNING],
@@ -168,7 +179,10 @@ def test_no_method_ever_calls_a_flag_tool(tmp_path, monkeypatch):
     p.list_challenges(); p.get_challenge(CID); p.download_files(CID, tmp_path)
     p.start_instance(CID); p.get_conn_info(CID); p.extend_instance(CID)
     p.submit_flag(CID, "CTF{x}"); p.close()
-    assert not {n for n, _ in t.calls} & FORBIDDEN_TOOLS
+    # Once per flag, from get_challenge (the cached detail is reused after).
+    assert [n for n, _ in t.calls if n in FORBIDDEN_TOOLS] == ["cyberedu_get_flag"]
+    first = [n for n, _ in t.calls].index("cyberedu_get_flag")
+    assert t.calls[first - 1][0] == "cyberedu_get_challenge"
     assert t.closed
 
 
@@ -251,3 +265,38 @@ def test_a_name_from_the_platform_cannot_escape_the_work_dir(tmp_path):
     p, _ = _plat({"cyberedu_get_challenge": evil})
     (path,) = p.download_files(CID, tmp_path)
     assert path.parent == tmp_path.resolve() and path.name == "x.bin"
+
+
+def test_flag_questions_reach_the_agent_and_nothing_else_does():
+    p, t = _plat({})
+    c = p.get_challenge(CID)
+    assert "What is the flag" in c.description and "ctf{sha256(flag)}" in c.description
+    for leak in ("LAST-SUBMITTED-VALUE", "SECRET-REASON", "HINT-TITLE"):
+        assert leak not in c.description
+    assert [a for n, a in t.calls if n == "cyberedu_get_flag"] == \
+        [{"challenge_id": CID, "flag_id": "4744"}]
+
+
+def test_a_flag_found_before_the_run_is_never_submitted():
+    two = {**DETAIL, "flags": [{"id": 1}, {"id": 2}]}
+    found = [{**QUESTION, "found": True}, {**QUESTION, "found": False}]
+    p, t = _plat({"cyberedu_get_challenge": two, "cyberedu_get_flag": found,
+                  "cyberedu_submit_flag": {"status": "failed"}})
+    p.get_challenge(CID)
+    p.submit_flag(CID, "ctf{x}")
+    assert [a["flag_id"] for n, a in t.calls if n == "cyberedu_submit_flag"] == ["2"]
+
+
+def test_a_flags_attempt_limit_is_respected():
+    p, t = _plat({"cyberedu_get_flag": {**QUESTION, "limit": 2},
+                  "cyberedu_submit_flag": {"status": "failed"}})
+    p.get_challenge(CID)
+    for v in ("ctf{a}", "ctf{b}", "ctf{c}"):
+        p.submit_flag(CID, v)
+    assert sum(1 for n, _ in t.calls if n == "cyberedu_submit_flag") == 2
+
+
+def test_get_flag_is_still_refused_for_any_other_use():
+    p, _ = _plat({})
+    with pytest.raises(PlatformError, match="refusing"):
+        p._call("cyberedu_get_flag", {"challenge_id": CID, "flag_id": "4744"})

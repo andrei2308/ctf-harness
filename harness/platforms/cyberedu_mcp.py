@@ -46,8 +46,13 @@ from .base import (Challenge, ChallengeKind, ConnInfo, Platform, PlatformError,
                    SubmitResult)
 
 COOKIE_ENV = "CYBEREDU_SESSION_COOKIE"
-# Flag-retrieval tools. Never called, whatever happens.
+# get_flag returns a flag's QUESTION (what a player sees on the site: "What is
+# the flag", "ctf{sha256(flag)}") but also fields that are not the agent's to
+# see: `value` (the account's last submitted answer), `rejection_reason`, and
+# `hints` (unlocking one costs points). It is called only through _question(),
+# which keeps QUESTION_FIELDS and nothing else; any other use is refused.
 FORBIDDEN_TOOLS = frozenset({"cyberedu_get_flag", "cyberedu_get_contest_flag"})
+QUESTION_FIELDS = ("question", "description", "type", "options", "multiple", "limit", "found")
 INSTANCE_POLL_SECONDS = 5.0
 
 
@@ -150,6 +155,9 @@ class CyberEduMcpPlatform(Platform):
         self._challenges: dict[str, dict] = {}     # raw detail by id
         self._accepted: dict[str, set[int]] = {}   # flag ids accepted, by challenge
         self._closed: dict[str, set[int]] = {}     # flag ids solved before this run
+        self._questions: dict[str, list[dict]] = {}  # per flag, QUESTION_FIELDS only
+        self._limits: dict[str, dict[int, int]] = {}  # flag id -> attempt limit (0 = none)
+        self._tries: dict[str, dict[int, int]] = {}   # flag id -> submissions this run
         self._started: set[str] = set()
         self._home: str | None = None
         if transport is None:
@@ -168,8 +176,8 @@ class CyberEduMcpPlatform(Platform):
 
     # --- transport -----------------------------------------------------------
 
-    def _call(self, tool: str, args: dict) -> Any:
-        if tool in FORBIDDEN_TOOLS:
+    def _call(self, tool: str, args: dict, _question: bool = False) -> Any:
+        if tool in FORBIDDEN_TOOLS and not _question:
             raise PlatformError(f"refusing flag-retrieval tool {tool}")
         data = self._t.call_tool(tool, args)
         if isinstance(data, dict) and "error" in data:
@@ -204,7 +212,32 @@ class CyberEduMcpPlatform(Platform):
         if not isinstance(data, dict) or not data.get("id"):
             raise PlatformError(f"no such challenge: {challenge_id}")
         self._challenges[challenge_id] = data
-        return self._to_challenge(data)
+        # Each flag's question carries what a player is told on the site, often
+        # the answer's format ("ctf{sha256(flag)}"); without it the agent cracked
+        # a password and could not know how to hand it in.
+        questions = []
+        if data.get("is_subscribed") or self.contest_slug:
+            for f in data.get("flags") or []:
+                try:
+                    q = self._question(challenge_id, int(f["id"]))
+                except PlatformError:
+                    q = {}
+                questions.append(q)
+                if q.get("found"):
+                    self._closed.setdefault(challenge_id, set()).add(int(f["id"]))
+                if q.get("limit"):
+                    self._limits.setdefault(challenge_id, {})[int(f["id"])] = int(q["limit"])
+        self._questions[challenge_id] = questions
+        return self._to_challenge(data, questions)
+
+    def _question(self, challenge_id: str, flag_id: int) -> dict:
+        """A flag's question, reduced to QUESTION_FIELDS. The only use of the
+        get_flag tool."""
+        tool = "cyberedu_get_contest_flag" if self.contest_slug else "cyberedu_get_flag"
+        data = self._call(tool, self._args(challenge_id, flag_id=str(flag_id)), _question=True)
+        if not isinstance(data, dict):
+            return {}
+        return {k: data[k] for k in QUESTION_FIELDS if k in data}
 
     def _detail(self, challenge_id: str) -> dict:
         if challenge_id not in self._challenges:
@@ -273,7 +306,10 @@ class CyberEduMcpPlatform(Platform):
             raise PlatformError("challenge lists no flag ids to submit against")
         done = self._accepted.setdefault(challenge_id, set())
         closed = self._closed.setdefault(challenge_id, set())
-        open_ids = [i for i in ids if i not in done and i not in closed]
+        limits = self._limits.get(challenge_id, {})
+        tries = self._tries.setdefault(challenge_id, {})
+        open_ids = [i for i in ids if i not in done and i not in closed
+                    and not (limits.get(i) and tries.get(i, 0) >= limits[i])]
         if not open_ids:
             # Not already_solved: the submitter would count this candidate as
             # accepted. The account solved these flags before the run; that is
@@ -283,6 +319,7 @@ class CyberEduMcpPlatform(Platform):
                                         "(solved on this account before the run)")
         last: dict = {}
         for flag_id in open_ids:
+            tries[flag_id] = tries.get(flag_id, 0) + 1
             try:
                 data = self._call(self._tool("submit_Xflag"),
                                   self._args(challenge_id, flag_id=str(flag_id), flag_value=flag))
@@ -336,17 +373,20 @@ class CyberEduMcpPlatform(Platform):
         return data if isinstance(data, dict) else {}
 
     @staticmethod
-    def _to_challenge(it: dict) -> Challenge:
+    def _to_challenge(it: dict, questions: list[dict] | None = None) -> Challenge:
         tags = [t.get("name", "") for t in it.get("tags") or [] if isinstance(t, dict)]
         category = ", ".join(t for t in tags if t)
         flags = it.get("flags")
+        description = str(it.get("description") or "")
+        if questions and any(q.get("question") or q.get("description") for q in questions):
+            description += "\n\n" + _questions_text(questions)
         return Challenge(
             id=str(it.get("id", "")),
             name=str(it.get("title", "")),
             kind=_kind_from_tags(tags),
             category=category,
             points=_int(it.get("points")),
-            description=str(it.get("description") or ""),
+            description=description,
             flags_required=len(flags) if isinstance(flags, list) and flags else 1,
             meta={k: it.get(k) for k in ("difficulty", "is_subscribed", "is_owned", "tenant")},
         )
@@ -366,6 +406,23 @@ class CyberEduMcpPlatform(Platform):
                         expires_at=float(expires) if expires else None,
                         meta={"service_type": status.get("service_type"),
                               "addresses": status.get("formattedAddresses")})
+
+
+def _questions_text(questions: list[dict]) -> str:
+    """The flags' questions as the site shows them, for the agent's prompt."""
+    lines = ["Flags to find (one answer each, in order):"]
+    for n, q in enumerate(questions, 1):
+        text = " ".join(str(q.get(k) or "").strip() for k in ("question",)).strip() or "flag"
+        line = f"{n}. {text}"
+        if q.get("description"):
+            line += f" (format: {str(q['description']).strip()})"
+        if q.get("options"):
+            line += " Options: " + "; ".join(str(o.get("value", o) if isinstance(o, dict) else o)
+                                            for o in q["options"])
+        if q.get("found"):
+            line += " [already solved on this account]"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 class _HttpError(Exception):

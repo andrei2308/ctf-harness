@@ -1,13 +1,14 @@
 # Rehearsal progress (interim)
 
-Status of the `CLAUDE_CODE_REHEARSAL.md` work as of 2026-11-16, mid-run. The
-final write-up will be `REHEARSAL_REPORT.md`. This file records what was done
-so far, every change and the failure behind it, and what is still running.
+Status of the `CLAUDE_CODE_REHEARSAL.md` work at the end of 2026-11-16. The
+rehearsal is **paused** and continues on 2026-11-17. The final write-up will be
+`REHEARSAL_REPORT.md`. This file records what was done so far, every change
+and the failure behind it, and what is left.
 
 **In one line:** the agent now solves real CyberEDU challenges end to end
-inside the contest toolchain. 2 of the first 4 attempted challenges are solved,
-and 10 harness defects have been found on real challenges and fixed, each with
-a test. The rehearsal batch is still running.
+inside the contest toolchain. **4 of the 8 attempted challenges are solved**,
+and 13 harness defects have been found on real challenges and fixed, each with
+a test.
 
 ## Setup
 
@@ -16,7 +17,7 @@ a test. The rehearsal batch is still running.
   runs in a separate image (`Dockerfile.rehearsal`) that is never uploaded.
 - Budget per run: 1200 s and 1.5M tokens. `CTF_PENALIZE_WRONG=1`.
   `CTF_MIN_OUTPUT_TOKENS=8192`. One run at a time, each in a fresh container.
-- Tokens used so far: about 3.1M of the agreed 25M ceiling.
+- Tokens used so far: about 5.8M of the agreed 25M ceiling.
 - Challenges: 16 Entry Level and Easy ones Andrei approved. 9 of them were
   subscribed for the rehearsal; none were solved on the account before; none
   are written up in `ctf-notes`. Logs and per-run data are kept outside this
@@ -26,7 +27,7 @@ a test. The rehearsal batch is still running.
 
 | Check | Result |
 |---|---|
-| Host tests | 136 passed (now 187 after this work) |
+| Host tests | 136 passed (now 193 after this work) |
 | `Dockerfile.contest` rebuild | 10 s; **3.8 s with `--no-cache`**, so it survives a lost build cache |
 | Image check / in-image tests | 57/57, 136/136 |
 | Base image backup | `~/ctf-harness-base.tar.gz`, 5.1 GB, `pigz` in 591 s, integrity checked |
@@ -44,15 +45,21 @@ credential-shaped files would have gone in too.
 | puzzled | web | **solved** | 671 s | 233K | Clean solve on rung 1. Wanted a local PHP interpreter, which the image lacks |
 | zodiac | forensics | unsolved | 1205 s | 612K | No vision: read handwriting through OCR and ASCII art; three glyphs short. Re-run with `view_image` is queued |
 | universe | misc / stego | unsolved | 1232 s | 771K | Found half of the hidden data; did not decode the stereogram half. Ran before flag questions were shown; to re-run |
+| adding-in-parts | forensics | **solved** | 719 s | 192K | Clean solve on rung 1 |
+| hidden-cipher | network | **solved** | 1157 s | 1.39M | Solved with 45 s and about 110K tokens to spare. Routed to pwn (fixed since). No ssh client in the image; scripted SSH with paramiko. About 10 minutes on an encrypted capture before it found the port-knock backdoor on the box |
+| Linux Memory Forensics | forensics | unsolvable here | 1233 s | 1.16M | **Environment:** the image is on Google Drive, and runs have no internet. The agent then spent 18 minutes probing its own harness for the session cookie (fixes 11 and 12) |
 | biscuiti | network | dropped | — | 848K | Both flags already solved on the account (flag 2 is a site question); excluded |
 
-Still running, one at a time: Linux Memory Forensics, adding-in-parts,
-hidden-cipher, fair-dice, badimg, investigator, bdlp, ret2win, encryptor,
-Poarta, then zodiac again.
+Queued for 2026-11-17, one at a time: fair-dice, badimg, investigator, bdlp,
+ret2win, encryptor, Poarta, then re-runs of zodiac (with `view_image`) and
+universe (with flag questions shown).
+
+**Selection lesson:** exclude challenges whose files are external links
+(Google Drive and similar). Runs have no internet; the contest is the same.
 
 ## Changes, each with the failure that motivated it
 
-All are on `contest-readiness`, each with a regression test (187 tests pass).
+All are on `contest-readiness`, each with a regression test (193 tests pass).
 
 1. **CyberEDU adapter rewritten** (`a374b17`). The old one used guessed tool
    names and could not work. It is now written from the server source and
@@ -114,8 +121,26 @@ All are on `contest-readiness`, each with a regression test (187 tests pass).
    (unlocking one costs points). Flags already found are skipped before any
    submission; an attempt limit is respected.
 9. **`.dockerignore`** (`e854a2b`). See step 1.
-10. **Live check of the submission response** (`563223e`). A correct flag
+10. **Live check of the submission response** (`b57c030`). A correct flag
     comes back accepted, a wrong one not, and an already-solved one as 403.
+11. **The agent's commands reach only their target** (`53f1b24`). Linux
+    Memory Forensics: unable to get its file, the agent hunted for the session
+    cookie (`/proc/1/environ`, the disk, `/run/secrets`) and queried the
+    CyberEDU API unauthenticated. The API was reachable because the harness
+    needs it. The defences held: `/proc` reads were refused and the cookie was
+    never reached. Agent commands now run in their own group, and the
+    firewall lets that group reach only the challenge's service. The model
+    endpoint and the API are for the harness only. Verified live.
+12. **Junk flags** (`53f1b24`). There were two wrong submissions of
+    `CTF{, flag{, ...}`: a run-log line is one JSON line, and the pattern
+    spanned prose up to the next `}`. Flag bodies now exclude `{`, and the
+    harness's own source is scanned for decoys, so its prompt examples
+    (`CTF{...}`) are never candidates.
+13. **Routing** (`5da1189`). hidden-cipher's category "Network" matched no
+    rule, so it went to pwn by its port. Network, wireless and pcap categories
+    now go to forensics, whose playbook gained WPA, SSH-box and port-knock
+    lines. Any specialist now gets connect/send/recv (or http) when the
+    challenge has a live target.
 
 ## Rehearsal-side settings (not in the repo)
 
@@ -137,9 +162,14 @@ All are on `contest-readiness`, each with a regression test (187 tests pass).
   hunting the capture for a second "flag" that is really a site question.
 - **Shared infrastructure needs a network boundary.** A stuck agent widens its
   search; only a firewall reliably stops it at its own instance.
-- **No PHP interpreter in the image** (puzzled). It would help PHP-quirk web
-  challenges, but needs a full image rebuild. This is a recommendation, not
-  done.
+- **Tools missing from the image** (recommendations, not done; each needs a
+  tool-layer rebuild and a new `:base`): a **PHP interpreter** (puzzled wanted
+  to replay leaked PHP), and **`openssh-client` + `sshpass`** (hidden-cipher had
+  to script SSH with paramiko).
+- **A stuck agent attacks its own environment.** Twice it went after the
+  harness rather than the challenge: reading `fixtures/` and its own logs, and
+  hunting the session cookie. Network and capability boundaries, not prompts,
+  are what held.
 
 ## Still to do
 

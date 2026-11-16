@@ -5,3 +5,12 @@
 runs/
 *.bundle
 *.egg-info
+# The build context becomes the submission: keep out local environments, logs
+# and anything credential-shaped (mirrors .gitignore; tests/test_dockerignore.py).
+.venv
+venv/
+*.log
+.env
+*.session.json
+cyberedu_session*
+.cyberedu-mcp/

@@ -21,5 +21,12 @@ RUN /usr/bin/python3 -m venv /opt/cyberedu-mcp \
       "cyberedu-client @ git+https://github.com/CyberEDU-Cyber-Range/cyberedu-client@${CYBEREDU_CLIENT_REF}" \
       "cyberedu-mcp @ git+https://github.com/CyberEDU-Cyber-Range/cyberedu-mcp@${CYBEREDU_MCP_REF}" \
  && /opt/venv/bin/pip install --no-cache-dir "mcp<2"
+# Egress lockdown (harness/egress.py): the harness lets the agent reach only its
+# own instance, the model and the platform API. Needs iptables here and
+# `docker run --cap-add NET_ADMIN`; without the capability the run stops
+# before the agent starts (fail closed).
+RUN apt-get update && apt-get install -y --no-install-recommends iptables \
+ && rm -rf /var/lib/apt/lists/*
 ENV CTF_CYBEREDU_MCP_PYTHON=/opt/cyberedu-mcp/bin/python \
-    CTF_PLATFORM=cyberedu
+    CTF_PLATFORM=cyberedu \
+    CTF_EGRESS_LOCKDOWN=1

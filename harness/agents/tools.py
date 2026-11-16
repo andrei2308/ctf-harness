@@ -110,6 +110,16 @@ class Executor(abc.ABC):
         ...
 
 
+def agent_argv_prefix() -> list[str]:
+    """Prefix for every process the agent drives. Under the egress lockdown
+    (harness/egress.py) it drops NET_ADMIN and NET_RAW from the capability
+    bounding set, so the agent cannot rewrite the firewall or send raw
+    packets, even as root. Empty otherwise."""
+    if os.environ.get("CTF_EGRESS_LOCKDOWN", "").strip().lower() in ("1", "true", "yes"):
+        return ["setpriv", "--bounding-set=-net_admin,-net_raw", "--"]
+    return []
+
+
 def agent_env(cwd: Path) -> dict[str, str]:
     """Environment for every process the agent can drive (its shell, gdb).
 
@@ -145,7 +155,7 @@ class LocalExecutor(Executor):
                 # and Kali resets PATH (dropping the image's venv and tool dirs),
                 # and ~/.profile, which with HOME=cwd is a file in the untrusted
                 # challenge directory.
-                ["bash", "-c", cmd],
+                agent_argv_prefix() + ["bash", "-c", cmd],
                 cwd=str(cwd),
                 env={**agent_env(cwd), **self._env},
                 stdout=subprocess.PIPE,
@@ -230,6 +240,37 @@ class Tool(abc.ABC):
 # Concrete tools                                                              #
 # --------------------------------------------------------------------------- #
 
+_SCANNERS = re.compile(r"\b(nmap|masscan|rustscan|zmap|unicornscan|naabu)\b")
+_NC_SCAN = re.compile(r"\b(nc|ncat|netcat)\b[^|;&\n]*\s-[a-zA-Z]*z")
+
+
+def scope_violation(cmd: str, conn: "ConnInfo | None") -> str | None:
+    """Why `cmd` would reach beyond the challenge's own service, or None.
+
+    The target is one host:port. On shared infrastructure (CyberEDU's nodes,
+    and likely the contest's) other ports on the same host are other people's
+    instances: in rehearsal the agent port-scanned the node and opened them.
+    This catches scanners pointed at the target host and the target host named
+    with another port. It is a guard, not a firewall: a script that builds the
+    address at run time gets past it."""
+    if conn is None:
+        return None
+    host, port = conn.host, conn.port
+    if conn.url:
+        from urllib.parse import urlsplit
+        u = urlsplit(conn.url)
+        host = host or u.hostname
+        port = port or u.port or (443 if u.scheme == "https" else 80)
+    if not host or host not in cmd:
+        return None
+    if _SCANNERS.search(cmd) or _NC_SCAN.search(cmd):
+        return f"port scanning {host} is out of scope"
+    for m in re.finditer(re.escape(host) + r"""['"]?\s*[:,\s]\s*['"]?(\d{1,5})\b""", cmd):
+        if port and int(m.group(1)) != int(port):
+            return f"{host}:{m.group(1)} is not this challenge's service"
+    return None
+
+
 class ShellTool(Tool):
     """Run a shell command in the challenge work dir. The workhorse for static
     challenges (rev/crypto/forensics): file, strings, binwalk, python, ghidra
@@ -254,6 +295,11 @@ class ShellTool(Tool):
         cmd = str(args.get("cmd", "")).strip()
         if not cmd:
             return ToolResult(self.name, b"", "shell:empty", error="empty command")
+        why = scope_violation(cmd, ctx.conn)
+        if why:
+            return ToolResult(self.name, b"", "shell:out-of-scope", error=(
+                f"refused: {why}. Your only target is the service given in the task; "
+                "other ports and hosts belong to other people."))
         timeout = ctx.clamp(args.get("timeout"))
         out, code = ctx.executor.run(cmd, ctx.work_dir, timeout)
         truncated = len(out) > MAX_TOOL_OUTPUT

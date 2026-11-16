@@ -27,7 +27,8 @@ import subprocess
 import time
 from pathlib import Path
 
-from .tools import MAX_TOOL_OUTPUT, Tool, ToolContext, ToolResult, agent_env
+from .tools import (MAX_TOOL_OUTPUT, Tool, ToolContext, ToolResult, agent_argv_prefix,
+                    agent_env)
 
 
 def gdb_binary() -> str:
@@ -388,7 +389,7 @@ class InteractiveGdbTool(Tool):
                                   error="binary required to start")
             if sess is not None and not getattr(sess, "_closed", True):
                 sess.close()
-            parts = gdb_argv("-q") + [binary]
+            parts = agent_argv_prefix() + gdb_argv("-q") + [binary]
             try:
                 proc = subprocess.Popen(parts, cwd=str(ctx.work_dir),
                                         env=agent_env(ctx.work_dir),

@@ -349,3 +349,51 @@ def test_wrong_prose_claim_is_bounded():
     solver, plat, _, _ = _solver(model, max_iterations=50)
     assert solver.run().outcome == Outcome.STALLED
     assert plat.calls == ["CTF{guess}"] * 3 and model.n == 3
+
+
+# --- scope: only the challenge's own service ------------------------------
+
+from harness.agents.tools import ShellTool as _Shell, scope_violation as _scope
+from harness.platforms.base import ConnInfo as _Conn
+
+_T = _Conn(host="35.242.202.105", port=32287, url="http://35.242.202.105:32287")
+
+
+def test_scanning_the_target_host_is_refused():
+    assert _scope("nmap -Pn -p 1-65535 35.242.202.105", _T)
+    assert _scope("nc -zv 35.242.202.105 30000-33000", _T)
+
+
+def test_another_port_on_the_target_host_is_refused():
+    assert _scope("curl -s http://35.242.202.105:31626/", _T)
+    assert _scope("python3 -c \"s.connect(('35.242.202.105', 32096))\"", _T)
+
+
+def test_the_target_itself_and_unrelated_commands_are_allowed():
+    assert _scope("curl -s -X POST http://35.242.202.105:32287/ping -d x=1", _T) is None
+    assert _scope("strings ./bin | grep flag", _T) is None
+    assert _scope("nmap --version", None) is None
+
+
+def test_shell_tool_refuses_out_of_scope_without_running_it():
+    import tempfile
+    from pathlib import Path
+    from harness.agents.tools import ToolContext
+
+    class _NoRun:
+        def run(self, *a):
+            raise AssertionError("an out-of-scope command must not run")
+
+    ctx = ToolContext(challenge_id="c", work_dir=Path(tempfile.mkdtemp()),
+                      executor=_NoRun(), conn=_T)
+    r = _Shell().run({"cmd": "nmap -sT 35.242.202.105"}, ctx)
+    assert r.error and "out of scope" in r.error
+
+
+def test_task_prompt_states_the_scope_when_there_is_a_target():
+    from pathlib import Path
+    from harness.agents.specialists import route
+    from harness.platforms.base import Challenge
+    ch = Challenge(id="c", name="w", category="web")
+    assert "Other ports on the same host" in route(ch, _T).task_prompt(ch, Path("/w"), _T, [])
+    assert "Scope:" not in route(ch, None).task_prompt(ch, Path("/w"), None, [])

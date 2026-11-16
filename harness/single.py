@@ -29,6 +29,7 @@ from .agents.exttools import probe_tools
 from .agents.specialists import route
 from .agents.tools import ToolContext
 from .config import Config, config_from_env, make_model_factory, make_platform
+from . import egress
 from .flags.decoys import known_decoys
 from .flags.submit import FlagSubmitter
 from .platforms.base import Challenge, Platform, PlatformError
@@ -94,6 +95,20 @@ def run_challenge(*, challenge: Challenge, platform: Platform, ladder: Ladder,
     except PlatformError as e:
         log.event("platform.error", challenge=cid, op="start_instance", error=str(e))
         conn = None
+
+    if egress.enabled():
+        # Rehearsal on shared infrastructure: only this challenge's service,
+        # the model and the platform API are reachable. Fail closed.
+        try:
+            allowed = egress.lockdown(conn)
+            log.event("egress.lockdown", challenge=cid, allowed=len(allowed))
+        except egress.EgressError as e:
+            log.event("egress.error", challenge=cid, error=str(e))
+            log.event("challenge.done", challenge=cid, solved=False, attempts=0,
+                      top_rung=0, reason="egress lockdown failed")
+            return ChallengeResult(challenge=cid, solved=False, flags_accepted=0,
+                                   attempts=0, top_rung=0,
+                                   reason=f"egress lockdown failed: {e}")
 
     specialist = route(challenge, conn)
     ctx = ToolContext(challenge_id=cid, work_dir=work_dir, executor=executor, conn=conn)

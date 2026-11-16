@@ -73,6 +73,12 @@ class Specialist(abc.ABC):
             lines.append(f"Web target: {conn.url}")
         elif conn and conn.host and conn.port:
             lines.append(f"Service target: {conn.host}:{conn.port} (use connect/send/recv).")
+        if conn and (conn.url or conn.host):
+            # In rehearsal the agent port-scanned the instance's host and opened
+            # other users' instances on it. Say plainly where the boundary is.
+            lines.append("Scope: this one service is your only target. Other ports on "
+                         "the same host and other hosts belong to other people: do not "
+                         "scan, probe or connect to them.")
         if challenge.flags_required > 1:
             lines.append(f"This challenge requires {challenge.flags_required} flags.")
         if available:

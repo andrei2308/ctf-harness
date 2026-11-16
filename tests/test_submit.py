@@ -82,3 +82,39 @@ def test_dry_run_never_calls_platform():
         res = sub.submit("c1", _gf())
         assert res.accepted and plat.calls == []
         log.close()
+
+
+def test_unreachable_grader_is_retried_with_backoff_then_abandoned():
+    # Rehearsal: a flag that kept failing was re-sent on every turn and every
+    # time it reappeared in output, 323 times in 21 minutes.
+    import harness.flags.submit as sm
+    from harness.flags.grounding import GroundedFlag
+    from harness.platforms.base import Platform, PlatformError
+    from harness.telemetry.run_log import RunLog
+    import tempfile
+
+    class Down(Platform):
+        calls = 0
+        def list_challenges(self): return []
+        def get_challenge(self, c): ...
+        def download_files(self, c, d): return []
+        def start_instance(self, c): ...
+        def get_conn_info(self, c): ...
+        def submit_flag(self, c, f):
+            Down.calls += 1
+            raise PlatformError("502")
+
+    now = [0.0]
+    sub = sm.FlagSubmitter(Down(), RunLog(tempfile.mkdtemp()), retry_delays=(), sleep=lambda s: None)
+    sub._clock = lambda: now[0]
+    gf = GroundedFlag(flag="CTF{x}", raw=b"CTF{x}", source="t", evidence_seq=1)
+    sub.submit("c", gf)
+    assert Down.calls == 1
+    for _ in range(20):                       # reappears in output, flushed every turn
+        sub.submit("c", gf); sub.flush_pending("c")
+    assert Down.calls == 2                    # one prompt re-send, then the backoff holds
+    for _ in range(sm.PENDING_MAX_ROUNDS + 3):
+        now[0] += 10_000
+        sub.flush_pending("c"); sub.submit("c", gf)
+    assert Down.calls == sm.PENDING_MAX_ROUNDS
+    assert sub.pending_count("c") == 0

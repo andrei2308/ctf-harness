@@ -52,6 +52,13 @@ class _ChalState:
 # Waits between tries when the grader is unreachable. A flag in hand is the most
 # valuable thing in the run, so a blip must not lose it.
 SUBMIT_RETRY_DELAYS = (0.5, 1.0, 2.0, 4.0)
+# After those, a flag that still did not reach the grader is re-sent at the
+# next flush, then no sooner than this many seconds later (doubling each time),
+# and dropped after PENDING_MAX_ROUNDS rounds. Without this a flag was re-sent
+# on every turn and every time it reappeared in output: 323 submissions in 21
+# minutes in rehearsal.
+PENDING_BACKOFF_SECONDS = 30.0
+PENDING_MAX_ROUNDS = 8
 
 
 class FlagSubmitter:
@@ -72,6 +79,9 @@ class FlagSubmitter:
         self._chals: dict[str, _ChalState] = {}
         # Flags that never reached the grader (transport failure), per challenge.
         self._pending: dict[str, dict[str, GroundedFlag]] = {}
+        self._pending_rounds: dict[tuple[str, str], int] = {}
+        self._next_try: dict[tuple[str, str], float] = {}
+        self._clock = time.monotonic
         self.records: list[SubmissionRecord] = []
 
     @property
@@ -125,6 +135,10 @@ class FlagSubmitter:
             if flag in st.accepted:
                 return SubmitResult(accepted=True, already_solved=True,
                                     message="flag already accepted")
+            key = (challenge, flag)
+            if self._clock() < self._next_try.get(key, 0.0):
+                return SubmitResult(accepted=False, message="queued; grader retry later",
+                                    raw={"transport_error": True, "backoff": True})
             tries = st.attempts.get(flag, 0)
             if tries >= self._max_submits:
                 return SubmitResult(accepted=False,
@@ -150,12 +164,34 @@ class FlagSubmitter:
                         self._sleep(self._retry_delays[i])
             if result is None:
                 # Never reached the grader: free the attempt slot and keep the
-                # flag so flush_pending() can send it once the grader is back.
+                # flag so flush_pending() can send it once the grader is back,
+                # but not sooner than the backoff, and not forever.
                 with self._lock:
-                    self._chals[challenge].attempts[flag] = tries
-                    self._pending.setdefault(challenge, {})[flag] = grounded
+                    rounds = self._pending_rounds.get(key, 0) + 1
+                    self._pending_rounds[key] = rounds
+                    if rounds >= PENDING_MAX_ROUNDS:
+                        self._pending.get(challenge, {}).pop(flag, None)
+                        self._next_try.pop(key, None)
+                        self._chals[challenge].attempts[flag] = self._max_submits
+                        give_up = True
+                    else:
+                        self._chals[challenge].attempts[flag] = tries
+                        self._pending.setdefault(challenge, {})[flag] = grounded
+                        # The first re-send is immediate (next flush), so a blip
+                        # costs nothing; after that, back off.
+                        self._next_try[key] = self._clock() + (
+                            0.0 if rounds == 1 else PENDING_BACKOFF_SECONDS * 2 ** (rounds - 2))
+                        give_up = False
+                if give_up:
+                    self._log.event("flag.submit_abandoned", challenge=challenge,
+                                    flag_preview=_preview(flag), rounds=rounds)
+                    return SubmitResult(accepted=False, message="grader unreachable; gave up",
+                                        raw={"transport_error": True})
                 return SubmitResult(accepted=False, message="submit failed; queued for retry",
                                     raw={"transport_error": True})
+            with self._lock:
+                self._pending_rounds.pop(key, None)
+                self._next_try.pop(key, None)
 
         with self._lock:
             self._pending.get(challenge, {}).pop(flag, None)

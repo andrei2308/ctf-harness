@@ -196,3 +196,42 @@ def test_missing_cookie_is_a_clear_error(monkeypatch):
     monkeypatch.delenv("CYBEREDU_SESSION_COOKIE", raising=False)
     with pytest.raises(PlatformError, match="CYBEREDU_SESSION_COOKIE"):
         CyberEduMcpPlatform()
+
+
+ALREADY = {"error": "HTTP Error", "status_code": 403, "message": "Client error '403 Forbidden'",
+           "response": '{\n    "message": "Challenge already solved"\n}'}
+
+
+def test_a_flag_solved_before_the_run_is_skipped_not_retried_and_not_a_solve():
+    # biscuiti, live: flag 1 was solved on the account earlier, so ANY value
+    # sent to it gets 403 "Challenge already solved". That is no verdict on the
+    # candidate: move on to the open flag, and never report a solve from it.
+    two = {**DETAIL, "flags": [{"id": 1}, {"id": 2}]}
+    p, t = _plat({"cyberedu_get_challenge": two,
+                  "cyberedu_submit_flag": [ALREADY, {"status": "failed"}]})
+    r = p.submit_flag(CID, "CTF{candidate}")
+    assert not r.accepted and not r.already_solved and not r.challenge_solved
+    assert [a["flag_id"] for n, a in t.calls if n == "cyberedu_submit_flag"] == ["1", "2"]
+    p.submit_flag(CID, "CTF{other}")                       # flag 1 is not tried again
+    assert [a["flag_id"] for n, a in t.calls if n == "cyberedu_submit_flag"][-1] == "2"
+
+
+def test_single_flag_already_solved_is_not_a_solve():
+    p, _ = _plat({"cyberedu_submit_flag": ALREADY})
+    r = p.submit_flag(CID, "CTF{x}")
+    assert not r.accepted and not r.already_solved and not r.challenge_solved
+    again = p.submit_flag(CID, "CTF{y}")
+    assert not again.accepted and "no open flag" in again.message
+
+
+def test_a_4xx_on_submit_is_an_answer_not_a_transport_error():
+    bad = {"error": "HTTP Error", "status_code": 422, "message": "Unprocessable", "response": "{}"}
+    p, _ = _plat({"cyberedu_submit_flag": bad})
+    assert not p.submit_flag(CID, "CTF{x}").accepted          # no PlatformError
+
+
+def test_a_5xx_on_submit_stays_retryable():
+    bad = {"error": "HTTP Error", "status_code": 502, "message": "Bad Gateway", "response": ""}
+    p, _ = _plat({"cyberedu_submit_flag": bad})
+    with pytest.raises(PlatformError):
+        p.submit_flag(CID, "CTF{x}")

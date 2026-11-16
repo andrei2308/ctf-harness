@@ -149,6 +149,7 @@ class CyberEduMcpPlatform(Platform):
         self.instance_wait = instance_wait
         self._challenges: dict[str, dict] = {}     # raw detail by id
         self._accepted: dict[str, set[int]] = {}   # flag ids accepted, by challenge
+        self._closed: dict[str, set[int]] = {}     # flag ids solved before this run
         self._started: set[str] = set()
         self._home: str | None = None
         if transport is None:
@@ -266,19 +267,41 @@ class CyberEduMcpPlatform(Platform):
         if not ids:
             raise PlatformError("challenge lists no flag ids to submit against")
         done = self._accepted.setdefault(challenge_id, set())
-        open_ids = [i for i in ids if i not in done]
+        closed = self._closed.setdefault(challenge_id, set())
+        open_ids = [i for i in ids if i not in done and i not in closed]
         if not open_ids:
-            return SubmitResult(accepted=False, already_solved=True, challenge_solved=True,
-                                message="every flag of this challenge is already accepted")
+            # Not already_solved: the submitter would count this candidate as
+            # accepted. The account solved these flags before the run; that is
+            # no verdict on what the agent found.
+            return SubmitResult(accepted=False,
+                                message="no open flag left on this challenge "
+                                        "(solved on this account before the run)")
         last: dict = {}
         for flag_id in open_ids:
-            data = self._call(self._tool("submit_Xflag"),
-                              self._args(challenge_id, flag_id=str(flag_id), flag_value=flag))
+            try:
+                data = self._call(self._tool("submit_Xflag"),
+                                  self._args(challenge_id, flag_id=str(flag_id), flag_value=flag))
+            except PlatformError as e:
+                status = getattr(e.__cause__, "status", None)
+                if status is None or status >= 500:
+                    raise                      # transport or server error: retryable
+                # A 4xx is the grader's answer, not an outage: never retried.
+                # 403 "Challenge already solved" comes back for ANY value sent to
+                # a flag this account already solved (seen live on biscuiti), so it
+                # says nothing about this candidate: close that id, try the next.
+                if status == 403 and "already solved" in str(e).lower():
+                    closed.add(flag_id)
+                    continue
+                last = {"status": "rejected", "http_status": status, "message": str(e)[:200]}
+                continue
             last = data if isinstance(data, dict) else {"text": str(data)}
             if _accepted(last):
                 done.add(flag_id)
                 return SubmitResult(accepted=True, challenge_solved=len(done) == len(ids),
                                     message=str(last.get("message", "")), raw=last)
+        if not last:            # every id we tried was already solved before this run
+            return SubmitResult(accepted=False,
+                                message="flag(s) already solved on this account before this run")
         return SubmitResult(accepted=False, message=str(last.get("message", "")), raw=last)
 
     def close(self) -> None:

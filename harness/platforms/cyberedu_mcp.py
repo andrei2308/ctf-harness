@@ -436,7 +436,9 @@ def _running(status: dict) -> bool:
 
 
 def _accepted(data: dict) -> bool:
-    # Checked against a live submission on 2026-11-16; see the tests.
+    # Live, 2026-11-16: a correct flag on wifi-get-me came back accepted through
+    # this check; a wrong value came back not accepted. A flag the account
+    # solved earlier answers HTTP 403 instead (handled in submit_flag).
     return str(data.get("status", "")).lower() == "success"
 
 

@@ -75,7 +75,8 @@ def test_ghidra_paths_have_no_dot_elements():
     ex = FakeExecutor([])
     ctx = _ctx(ex)
     GhidraDecompileTool().run({"binary": "./bin"}, ctx)
-    proj = ex.last_cmd.split()[1]
+    words = ex.last_cmd.split()
+    proj = words[words.index("analyzeHeadless") + 1]
     assert not any(part.startswith(".") for part in Path(proj).parts)
     assert ".ghidra" not in ex.last_cmd
 
@@ -132,3 +133,14 @@ def test_volatility_reaches_the_cli_when_the_module_is_installed(monkeypatch, tm
     ctx = ToolContext(challenge_id="c", work_dir=tmp_path, executor=LocalExecutor())
     r = VolatilityTool().run({"image": "m.raw", "plugin": "windows.info"}, ctx)
     assert b"VOL -q -f m.raw windows.info" in r.output, r.output
+
+
+def test_ghidra_keeps_its_settings_in_the_work_dir():
+    # A read-only root (a plausible contest sandbox) broke Ghidra: it wrote
+    # to /root/.config/ghidra, ignoring $HOME.
+    ex = FakeExecutor([])
+    ctx = _ctx(ex)
+    GhidraDecompileTool().run({"binary": "./bin"}, ctx)
+    home = str(ctx.work_dir / "ghidra_tool" / "home")
+    assert f"XDG_CONFIG_HOME={home}/.config" in ex.last_cmd
+    assert f"-Duser.home={home}" in ex.last_cmd and "analyzeHeadless" in ex.last_cmd

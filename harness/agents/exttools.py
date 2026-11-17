@@ -222,7 +222,14 @@ class GhidraDecompileTool(Tool):
         proj = tool_dir / "proj"
         proj.mkdir(parents=True, exist_ok=True)
         (tool_dir / _GHIDRA_SCRIPT_NAME).write_text(_GHIDRA_DECOMPILE_SCRIPT, encoding="utf-8")
-        parts = ["analyzeHeadless", str(proj), "tmp",
+        # Ghidra keeps settings under $XDG_CONFIG_HOME or Java's user.home
+        # (/root), not $HOME: on a read-only root it could not start (task 1,
+        # `docker run --read-only`). Keep all of it in the work dir.
+        home = tool_dir / "home"
+        home.mkdir(parents=True, exist_ok=True)
+        parts = ["env", f"XDG_CONFIG_HOME={home / '.config'}", f"XDG_CACHE_HOME={home / '.cache'}",
+                 f"_JAVA_OPTIONS=-Duser.home={home}",
+                 "analyzeHeadless", str(proj), "tmp",
                  "-import", binary,
                  "-scriptPath", str(tool_dir),
                  "-postScript", _GHIDRA_SCRIPT_NAME]

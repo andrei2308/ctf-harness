@@ -113,6 +113,12 @@ class StarterKitPlatform(Platform):
         return self.start_instance(challenge_id)
 
     # --- 4. submitting -------------------------------------------------------
+    # If each flag is a question with its own id (CyberEDU, the drill's mock),
+    # the value must go to the right question: try each question not yet
+    # solved, in order, and remember which ones accepted. Space your own calls
+    # with kit.Pacer (self._pace = kit.Pacer(1.0); self._pace.wait() before
+    # each POST): several calls inside one submit_flag hit a rate limit (429)
+    # in the drill. harness/platforms/example_http.py is a worked example.
     def submit_flag(self, challenge_id: str, flag: str) -> SubmitResult:
         # status, data = kit.http_json("POST", f"{self.base}/challenges/{challenge_id}/submit",
         #                              body={"flag": flag}, headers=self.headers)

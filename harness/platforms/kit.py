@@ -190,3 +190,25 @@ def describe(description: str = "", *, questions: list | None = None,
             lines.append(line)
         parts.append("\n".join(lines))
     return "\n\n".join(p for p in parts if p)
+
+
+class Pacer:
+    """Keep at least `interval` seconds between an adapter's own calls.
+
+    The harness spaces its submissions (CTF_SUBMIT_MIN_INTERVAL), but one
+    submit_flag that tries several questions makes several calls at once: in
+    the adapter drill the second one got HTTP 429. Call wait() before each."""
+
+    def __init__(self, interval: float = 1.0, clock=None, sleep=None):
+        import time as _t
+        self.interval = interval
+        self._clock = clock or _t.monotonic
+        self._sleep = sleep or _t.sleep
+        self._last: float | None = None
+
+    def wait(self) -> None:
+        if self._last is not None:
+            gap = self.interval - (self._clock() - self._last)
+            if gap > 0:
+                self._sleep(gap)
+        self._last = self._clock()

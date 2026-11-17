@@ -30,6 +30,19 @@ from .flags.grounding import flag_pattern, format_check
 from .platforms.base import ChallengeKind
 
 
+def stated_flag_examples(text: str) -> list[str]:
+    """Flag formats a description states, as matchable examples:
+    "MOCK{...}" -> "MOCK{x0x0x0x0}", "format: DCTF{sha256}" -> "DCTF{x0x0x0x0}".
+    Bare words in braces only; hints without a '{...}' shape are ignored."""
+    import re
+    out = []
+    for m in re.finditer(r"\b([A-Za-z][A-Za-z0-9_]{0,15})\{[^{}\s]{0,40}\}", text or ""):
+        ex = f"{m.group(1)}{{x0x0x0x0}}"
+        if ex not in out:
+            out.append(ex)
+    return out
+
+
 class _Report:
     def __init__(self, out) -> None:
         self.out, self.failed, self.warned = out, 0, 0
@@ -126,6 +139,13 @@ def check(platform, challenge_id: str | None = None, submit: str | None = None,
     chk = format_check(ch.description)
     r.ok(f"flag pattern: {flag_pattern().pattern.decode()[:90]}"
          + (f"; stated hash format, hex lengths {chk.lengths}" if chk else ""))
+    # A stated flag format the pattern cannot match means flags in tool output
+    # are never picked up automatically (drill: a kit with MOCK{...} flags and
+    # the default CTF{...} pattern). Only submit_flag would get them in.
+    for example in stated_flag_examples(ch.description):
+        if not flag_pattern().search(example.encode()):
+            r.warn(f"the challenge states the format {example!r}, which the flag pattern "
+                   f"does not match: set CTF_FLAG_REGEX in contest.env")
     print("\n----- what the agent is told -----", file=out)
     print(spec.task_prompt(ch, work, conn, files), file=out)
     print("----------------------------------\n", file=out)

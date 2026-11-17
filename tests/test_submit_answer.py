@@ -117,3 +117,29 @@ def test_ungrounded_guesses_are_capped_when_wrong_flags_are_free():
     out, plat, state = _run(script, penalize=False)
     assert len(plat.calls) == MAX_GUESSES
     assert any("guess budget" in m.content for m in state.messages)
+
+
+def test_a_flag_shaped_answer_must_meet_the_stated_format():
+    # metar-station: format UNBRK{sha256}; the model pushed a planted
+    # CTF{try_harder...} through submit_flag at the end of its time.
+    from harness.flags.grounding import format_check
+    d = tempfile.mkdtemp()
+    log, plat = RunLog(d), _Plat(answer="UNBRK{" + "a" * 64 + "}")
+    state = new_state("c", Path(d), ToolContext("c", Path(d), LocalExecutor()),
+                      system_prompt="s", task_prompt="t",
+                      flag_check=format_check("1. What is the flag? (format: UNBRK{sha256})"))
+
+    class Page(_Out):
+        def run(self, args, ctx):
+            return ToolResult(self.name, b"report: CTF{try_harder_you_are_close} | pin 4821",
+                              "shell:curl")
+    script = [_call(1, "shell", cmd="curl"), _call(2, "submit_flag", flag="CTF{try_harder_you_are_close}"),
+              _call(3, "submit_flag", flag="4821")]
+    Solver(model=ScriptedModel(script + [ModelResponse(text="done", stop_reason="stop")] * 4),
+           profile=ToolProfile("t", [Page(), SubmitFlagTool()]), state=state, budget=Budget(Caps()),
+           log=log, submitter=FlagSubmitter(plat, log, penalize_wrong=True),
+           max_iterations=6, plan_first=False).run()
+    log.close()
+    assert "CTF{try_harder_you_are_close}" not in plat.calls      # refused: wrong format
+    assert "4821" in plat.calls                                     # a non-flag answer still goes
+    assert any("does not match the flag format" in m.content for m in state.messages)

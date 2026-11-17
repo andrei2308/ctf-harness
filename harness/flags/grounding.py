@@ -222,6 +222,16 @@ class EvidenceStore:
         """All flags ever found in evidence (latched, order of first sighting)."""
         return list(self._latched.values())
 
+    def breaks_stated_format(self, value: str) -> bool:
+        """True when `value` is flag-shaped (WORD{...}) and the challenge states
+        a format it does not meet. submit_flag skips the flag pattern on purpose
+        (it is for answers like a password); a flag-shaped answer still has to
+        meet the stated format (metar-station: a planted CTF{try_harder...} went
+        out through submit_flag although the format was UNBRK{sha256})."""
+        v = value.strip()
+        return (self._accept is not None and bool(re.fullmatch(r"[A-Za-z0-9_]*\{.*\}", v, re.S))
+                and not self._accept(v))
+
     def contains_independent(self, value: str) -> GroundedFlag | None:
         """Is `value` in the output of a command that did not itself contain it?
         `echo s3cretpass` proves nothing; aircrack-ng printing it does. Used for

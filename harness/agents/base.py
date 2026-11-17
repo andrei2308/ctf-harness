@@ -292,6 +292,9 @@ class Solver:
         cap = MAX_ANSWER_SUBMITS if self.submitter.allow_ungrounded else MAX_ANSWER_SUBMITS_PENALIZED
         if self.state.answer_submits >= cap:
             return out("", error=f"submission limit reached ({cap}) for this challenge")
+        if self.state.store.breaks_stated_format(value):
+            return out("", error=("not submitted: that value does not match the flag format "
+                                  "the challenge states. Check the format in the task."))
         gf = self.state.store.contains_independent(value)
         if gf is None:
             if not self.submitter.allow_ungrounded:

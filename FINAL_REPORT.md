@@ -179,3 +179,151 @@ Done on 2026-11-17, well ahead of the 18 November 20:00 deadline:
 
 After the freeze, only `contest.env` and `harness/platforms/starter_kit.py`
 change.
+
+## Addendum: the pre-freeze check (`CLAUDE_CODE_PREFREEZE.md`)
+
+Done on the evening of 17 November, on `a820595` and the fixes below.
+
+### Task 1: verifying the new commit
+
+- **Tests:** 280 pass on the host and in the image; `check_image` 74/74.
+- **Scanner guard, live** (badimg instance, firewall on):
+  - these now run: a hydra `http-post-form` attack with a quoted `&`,
+    `ffuf -u 'http://h/?a=FUZZ&b=2'` and `wfuzz -d "a=FUZZ&b=1"`;
+  - `nohup ffuf … &` is still refused.
+- **Hanging endpoint, `CTF_TOTAL_SECONDS=120`:** the run ended at 121 s, with
+  20 `solver.model_timeout` events and no `solver.model_retry`.
+- **Preflight check 8 against GLM:** "about 29 tokens/s … set
+  `CTF_MAX_OUTPUT_TOKENS=4096`". Two problems:
+  - **The estimate reads low.** One 275-token reply includes about 5 s of
+    fixed latency. Replies that ran to their cap in the logs went at
+    40–63 tokens/s (median over turns of 20 s or more: 42).
+  - **The advice was harmful.** The cap wins over `CTF_MIN_OUTPUT_TOKENS`, so
+    4096 would undo check 6's 8192 floor and bring back the turns GLM thinks
+    away. Fixed (`8dd0c7d`): check 8 never advises less than the floor.
+
+### Task 2: the timeouts, from the logs
+
+80 runs, 1,986 turns, both rounds:
+
+| | |
+|---|---|
+| "Timed out" retries in the logs | 48 |
+| … calls cut short by the time left, at the end of a run (1–94 s) | 37 |
+| … calls that ran to the full limit (300 s ×8, 180 s ×3), in 7 episodes | 11 |
+| Output cap of those 11 | 8192 in every case (rungs 0–1); none at 16K or 32K |
+| Same request sent again after a full-length timeout | answered in 8–126 s (392–4,743 tokens) in 6 of 7 episodes; the 7th (boogie-woogie) was just before the 429 outage |
+| Output speed, completed turns ≥ 20 s | median 42 tokens/s (p10 31, p90 51); the same on every rung |
+| Turns that ran to the 8192 cap | 7, taking 130–202 s |
+| Completed turns over 300 s | turns whose `seconds` include their failed tries (647 s = 300 + 302 + a 45 s reply of 1,505 tokens), or a single call at 2–17 tokens/s on the first night. None was a 32K reply |
+
+**Verdict: an endpoint that stops answering, not replies too long to
+finish.** At 42 tokens/s a full 8192-token reply ends well inside 300 s, and
+the same request answered quickly when sent again.
+
+What that means for the new commit:
+
+- **The note to the model is harmless.** The call after it is what recovers
+  a stall, as the identical retry did before.
+- **The cap reduction does not help.** Every stall happened at the 8192
+  floor, so nothing is halved.
+- **One side effect, deliberate in the commit and asserted by its test, so
+  left for Mythos to decide:** after one stall at the floor,
+  `output_ceiling` stays at 8192 for the rest of the challenge. That clamps
+  rungs 2 and 3 and the cut-off raise. In the logs no rung-2 turn used more
+  than 6,876 tokens, so the cost is small, but it buys nothing.
+- **`CTF_MODEL_TIMEOUT=180` stays.** It cuts a stall sooner. The comment in
+  `contest.env` now says what the timeouts were (`ea7f773`), and no
+  `CTF_MAX_OUTPUT_TOKENS` is set for GLM.
+
+### Task 3: three live pwn runs at 1200 s
+
+| Challenge | Before | Now | Result |
+|---|---|---|---|
+| baby heap | 5 timeouts at 300 s (about 1,500 s lost, in a 2400 s run) | 2 at 180 s (360 s lost) | unsolved |
+| string-comparer | 5 timeouts at 180 s | 1 at 180 s (180 s lost) | unsolved |
+| boogie-woogie | 3 at 300 s (900 s lost), then a 429 outage | 2 at 180 s (360 s lost) | unsolved |
+
+- **Pass condition:** less time lost to calls that return nothing. Met on
+  all three.
+- **The note:** after it, the next call answered in 4.5 s with 155 tokens on
+  baby heap. That fits a stall that cleared and is also what the note asks
+  for.
+- **No cap was halved;** all stalls happened at the floor.
+
+**A defect these runs exposed, fixed (`e728c60`).** In the last 20 s (the
+reserve) every model request got a 1 s timeout and failed. Three in a row end
+an attempt, so the ladder climbed through every rung and restart in seconds:
+string-comparer started 19 of its 21 attempts in its last 20 s. This made
+about 20 doomed requests to the shared endpoint at the end of every challenge,
+and the summaries reported `top_rung 3` for runs that never worked past rung
+1. The solver now ends the attempt as exhausted once less than 5 s remains
+beyond the reserve, after flushing any pending flag.
+
+### Task 4: regression
+
+**Offline suite on `ea7f773`: 5 of 6 solved, as before, zodiac excepted.**
+
+| Challenge | Time | Wrong submissions |
+|---|---|---|
+| encryptor | 61 s | 0 |
+| bdlp | 108 s | 0 |
+| investigator | 351 s | 0 |
+| adding-in-parts | 475 s | 2: grounded bare strings through `submit_flag`, allowed since no format is stated; model variance |
+| wifi-get-me | 59 s | 0 |
+
+**Zodiac exposed a defect, fixed (`cfc1ec9`).**
+- **What happened:** 7 of its 10 wrong submissions were the model printing
+  its own guesses (`python3 -c "for f in ['ctf{…}', …]: print(f)"`,
+  `echo "ctf{…}"`). Each printed value was latched as grounded and
+  auto-submitted, getting past both the penalty guard and
+  `CTF_MAX_GUESSES`.
+- **The fix:** a value the producing command itself carries no longer
+  grounds a flag, whether found automatically or claimed in prose.
+  `submit_flag` already had this rule.
+- **Tests:** the test fakes that echoed their argument now take it
+  hex-wrapped (`tests/echo_fake.py`).
+
+**Final suite run on `e728c60`:**
+
+| Challenge | Result | Wrong submissions |
+|---|---|---|
+| encryptor | solved, 75 s | 0 |
+| bdlp | solved, 58 s | 0 |
+| wifi-get-me | solved, 55 s | 0 |
+| adding-in-parts | solved, 785 s | 4: format guesses for recovered data, including a `CTF{…}` computed from it, which correctly still grounds; no format is stated |
+| investigator | unsolved (1.5M token cap), then solved on a re-run in 322 s | 0 |
+| zodiac | unsolved, as expected | 3 (instead of 10) |
+
+- **investigator:** the first run is model variance, not the fix. The real
+  flag never appeared in tool output; the only flag-shaped string was the
+  planted decoy, which its command did not contain.
+- **zodiac:** all 3 wrong submissions were built from words read off the
+  image, the only route to an image-read answer. No literal guesses remain.
+  It ended at 1180 s on "time left is the reserve" after 3 attempts,
+  against 22 that churned at the end before. Both fixes are visible.
+
+**Note on the 429s:** the suite and the live runs shared the GLM quota in
+parallel. Both runs that ended on "429" did so in their last seconds, where
+the 15 s backoff cannot fit, by design.
+
+### Freeze state
+
+- **Commits after `a820595`, each with a regression test:**
+  - `8dd0c7d` check 8 never advises a cap below the floor
+  - `ea7f773` the `contest.env` timeout comment matches the logs
+  - `cfc1ec9` a value the command itself carried never grounds a flag
+  - `e728c60` no model call inside the reserve
+- **Checks:** 283 tests pass on the host and in the image. The no-cache
+  contest rebuild took 2 s; `check_image` 74/74.
+- **Base:** unchanged (`03a62b9…`), so `~/ctf-harness-base.tar.gz` is still
+  current.
+- **Tokens this round:** about 21M of the 30M agreed.
+- **Merge:** fast-forwarding `main` to this branch waits for Andrei's
+  go-ahead.
+- **After that,** only `contest.env` and `harness/platforms/starter_kit.py`
+  change.
+- **Still for Andrei:**
+  - rotate the CyberEDU session cookie (the last run is done);
+  - time a 6 GB upload on the phone connection;
+  - no Kali upgrade and no Docker prune before the contest.

@@ -1,0 +1,5 @@
+# Checks of scripts/check_image.py that the medium tier does not pass BY DESIGN
+# (scripts/tiers/medium.conf). One check label per line, exactly as
+# check_image.py prints it.
+sage factors
+hashcat

@@ -35,6 +35,11 @@ directories fall back to a temporary one if unwritable; a tools script adds the
 clients the agent lacked; and the contest adapter has a kit and a check command.
 `CLAUDE_CODE_FINAL.md` lists what must be verified before the freeze.
 
+**Smaller image tiers (2026-11-17, branch `image-tiers`, not yet built):** in
+case the upload has a size limit, `Dockerfile.slim` builds a medium and a core
+base beside the full one. Written without Docker; `CLAUDE_CODE_TIERS.md` says
+what to build, measure and check. See "If the image is too big" below.
+
 ## Contest day, step by step
 
 1. **Read the starter kit.** Find: how the challenge arrives, how a flag is
@@ -70,6 +75,8 @@ clients the agent lacked; and the contest adapter has a kit and a check command.
    docker build -f Dockerfile.contest -t ctf-harness:latest .
    docker run --rm ctf-harness:latest python scripts/check_image.py
    ```
+   If the kit states a size limit the full image does not meet, rebuild on a
+   smaller base instead: see "If the image is too big" below.
 6. **Upload, and aim the first run at the easiest challenge.** Logs appear
    only after a solve, so one early solve is the only proof the pipeline works.
 7. **Then tune from what the logs show.** After the freeze, only `contest.env`
@@ -97,6 +104,43 @@ docker build -f Dockerfile.contest -t ctf-harness:latest .
 
 A change to the tools themselves (a new package) still needs the full
 `Dockerfile`, then re-tagging `:base`.
+
+## If the image is too big
+
+The full image is about 15 GB, 5.75 GB compressed. If the organizers limit the
+size, pick the largest base that fits. The smaller ones are built ahead of time
+from `Dockerfile.slim`; building one takes the network and about 15 minutes, so
+it is not something to start at the venue.
+
+| Base tag | What it is | Size |
+|---|---|---|
+| `ctf-harness:base` | Everything. The image every rehearsal ran on. | 15.09 GB, 5.75 GB compressed |
+| `ctf-harness:base-medium` | Full minus SageMath, most of SecLists, hashcat, duplicates and docs. | not built yet |
+| `ctf-harness:base-core` | Enough for entry and medium challenges in every category. No Sage, Ghidra, Java tools, Foundry, ffmpeg. | not built yet |
+
+On the day the only difference is one argument:
+
+```bash
+docker build -f Dockerfile.contest --build-arg BASE=ctf-harness:base-core -t ctf-harness:latest .
+docker run --rm ctf-harness:latest python scripts/check_image.py --strict
+```
+
+- **What each tier holds** is `scripts/tiers/<tier>.conf`; the comments at the
+  top say what was left out and what stands in for it.
+- **`check_image.py` knows the tier.** Tools left out on purpose
+  (`scripts/tiers/<tier>.missing`) print as `[ -- ]`; a `[miss]` is a package
+  that should be there and is not; `[FAIL]` is critical in every tier.
+- **The agent is told.** In a smaller tier the task prompt gets one line naming
+  the tools its playbook mentions that are not installed, with what to use
+  instead, and `ghidra_decompile` is not offered when Ghidra is absent. In the
+  full image nothing changes.
+- **Only the full image has been rehearsed against a real model.** A smaller
+  tier is the fallback for a size limit, not an optimisation: without a limit,
+  upload the full one.
+- **Below the core tier:** `--build-arg WITH_ANGR=0` on `Dockerfile.slim` saves
+  about 290 MB more (and `check_image.py` then reports `angr imports` as its
+  one critical failure). After that, remove packages from
+  `scripts/tiers/core.conf`.
 
 What is a setting and what is code:
 

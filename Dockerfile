@@ -11,15 +11,15 @@
 #
 # Build on a machine with Docker + internet (cannot build in the run sandbox):
 #   docker build -t ctf-harness:latest .                                  # full
-#   docker build --build-arg WITH_SAGE=0 --build-arg WITH_WORDLISTS=0 \
-#     -t ctf-harness:slim .                                               # trimmed
 #   docker run --rm ctf-harness:latest python -m pytest -q               # smoke
 #   docker run --rm ctf-harness:latest ctf-tools                         # list what's present
 #
 # Run-time constraints no install changes: NO GPU (hashcat is CPU-only/slow —
 # John is the CPU workhorse) and NO INTERNET (factordb / online RSA lookups are
-# dead — factor locally with sage / yafu). The image is large; SageMath and
-# SecLists are the bulk and sit behind the WITH_* args.
+# dead — factor locally with sage / yafu). The image is large (about 15 GB).
+# For a contest that limits image size, build a smaller tier with
+# Dockerfile.slim instead; the WITH_SAGE / WITH_WORDLISTS args below do NOT
+# give one (WITH_SAGE=0 removes nothing: sagemath is also in the main list).
 # Pinned by digest: with a bare tag, any `docker pull` of kali-rolling on the
 # build machine changes the base and throws away every cached layer, turning a
 # seconds-long contest-day rebuild into a full one that needs the network. Bump
@@ -148,7 +148,10 @@ ENV PATH="/root/.foundry/bin:${PATH}"
 RUN (curl -L https://foundry.paradigm.xyz | bash && /root/.foundry/bin/foundryup) \
       || echo "WARN: foundry skip"
 
-# --- heavy optional layers (toggle off to shrink toward a size limit) -------
+# --- heavy optional layers -------------------------------------------------
+# Kept as they were when the image was validated. WITH_SAGE=0 has no effect
+# (sagemath is installed by the main list above); for a smaller image use
+# Dockerfile.slim.
 ARG WITH_SAGE=1
 RUN if [ "$WITH_SAGE" = "1" ]; then apt-get update && \
       apt-get install -y --no-install-recommends sagemath && rm -rf /var/lib/apt/lists/* \

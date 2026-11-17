@@ -204,7 +204,8 @@ class Scheduler:
 
         rung = self.ladder.rung(rec.rung)
         model = self.model_factory(rung.spec)
-        solver = Solver(model=model, profile=rec.specialist.profile_for(rec.state.ctx.conn),
+        solver = Solver(model=model,
+                        profile=rec.specialist.profile_for(rec.state.ctx.conn, self._available),
                         state=rec.state, budget=self.budget, log=self.log,
                         submitter=self.submitter, max_iterations=rung.max_iterations,
                         plan_first=self.plan_first)

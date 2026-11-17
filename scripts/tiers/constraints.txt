@@ -1,0 +1,10 @@
+# Python package versions for the smaller image tiers (Dockerfile.slim).
+#
+# Empty: the tier build takes the newest release of every package. To build the
+# tiers with exactly the versions in the image that was rehearsed, fill this
+# file from that image and rebuild:
+#
+#   docker run --rm --entrypoint /opt/venv/bin/pip ctf-harness:base freeze \
+#     | grep -E '^[A-Za-z0-9_.-]+==[^ ]+$' >> scripts/tiers/constraints.txt
+#
+# Only plain `name==version` lines belong here (no `@ git+...`, no `-e`).

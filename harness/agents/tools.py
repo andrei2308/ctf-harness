@@ -230,6 +230,9 @@ class ToolContext:
 class Tool(abc.ABC):
     name: str = ""
     description: str = ""
+    # Name the capability probe reports when the program behind this tool is
+    # installed; "" for tools that need nothing beyond the harness.
+    needs: str = ""
 
     @abc.abstractmethod
     def input_schema(self) -> dict: ...

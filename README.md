@@ -180,16 +180,17 @@ internet** (factordb / online lookups are dead — factor locally with sage/yafu
 
 ```bash
 docker build -t ctf-harness:latest .                              # full kit
-docker build --build-arg WITH_SAGE=0 --build-arg WITH_WORDLISTS=0 \
-  -t ctf-harness:slim .                                           # trim the heavy layers
+docker build -f Dockerfile.slim --build-arg TIER=core \
+  -t ctf-harness:base-core .                                      # smaller tier (medium | core)
 docker run --rm ctf-harness:latest python -m pytest -q            # smoke test
 docker run --rm ctf-harness:latest ctf-tools                      # list what the probe sees
 ```
 
 Packages install in a resilient per-package loop, so a name this Kali snapshot
 lacks only skips that package (logged `WARN`) instead of failing the build.
-SageMath and SecLists are most of the image size — toggle them off if the
-submission size limit (OPEN) bites.
+If the contest limits image size, use one of the smaller tiers built by
+`Dockerfile.slim` (`HANDOFF.md`, "If the image is too big"). The `WITH_SAGE` /
+`WITH_WORDLISTS` arguments of the main `Dockerfile` do not give a smaller image.
 
 ## Research-informed features
 
@@ -245,7 +246,7 @@ real environment). Defaults in `config.py`:
   best-of-N if permitted.
 - **Platform** (Q4): `platform=files|benchmark|mcp` or `module:Class`
   (skeleton: `harness/platforms/starter_kit.py`), `contest_id`.
-- **Packaging/sandbox** (Q5): the Docker image; `WITH_SAGE`/`WITH_WORDLISTS`.
+- **Packaging/sandbox** (Q5): the Docker image; smaller tiers via `Dockerfile.slim`.
 - **Wrong-submission penalty** (Q6): `penalize_wrong` (default False).
 - **Flag format**: `CTF_FLAG_REGEX` (default: `CTF{...}` with optional prefix).
 

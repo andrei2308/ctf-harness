@@ -1,0 +1,91 @@
+# Smaller builds of the submission image, for a contest that limits image size.
+#
+# The full image (Dockerfile, about 15 GB, 5.75 GB compressed) stays the default
+# and is not touched by anything here. This file builds a separate image from
+# the same pinned Kali base, with fewer tools:
+#
+#   docker build -f Dockerfile.slim --build-arg TIER=medium -t ctf-harness:base-medium .
+#   docker build -f Dockerfile.slim --build-arg TIER=core   -t ctf-harness:base-core   .
+#
+#   medium   the full toolkit minus its few very large pieces (SageMath, all of
+#            SecLists, hashcat, the duplicate copies)
+#   core     what the agent needs to solve entry and medium challenges in every
+#            category, and nothing more
+#
+# What each tier holds is data: scripts/tiers/<tier>.conf. How it is installed is
+# scripts/image_tier.sh, the same for every tier. Single pieces can be switched
+# without editing either:
+#
+#   --build-arg WITH_GHIDRA=0     medium without Ghidra and its Java
+#   --build-arg WITH_ANGR=0       core without angr (then check_image reports
+#                                 one critical failure, "angr imports")
+#   also: WITH_PWNDBG, WITH_FOUNDRY, WITH_CYBEREDU_MCP, WITH_SAGE,
+#         SECLISTS=subset|full|none
+#
+# A layer cannot be made smaller by deleting from it later, which is why a tier
+# is a build from scratch and not the full image with things removed.
+#
+# The result is used exactly like ctf-harness:base. Check it, then on the day:
+#
+#   docker run --rm ctf-harness:base-core python scripts/check_image.py --strict
+#   docker build -f Dockerfile.contest --build-arg BASE=ctf-harness:base-core -t ctf-harness:latest .
+#
+# Needs the network (about 15 minutes); build it BEFORE the contest, never at
+# the venue. The contest-day rebuild on top of it needs none.
+FROM kalilinux/kali-rolling@sha256:1ff4a2be3849333687b3ed2b31bb5af0cd1b7c0a11ec7713feb5abe5a6b2795c
+
+ARG TIER=medium
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONUNBUFFERED=1 \
+    LANG=C.UTF-8
+
+COPY scripts/tiers/${TIER}.conf /etc/ctf-image-tier.conf
+COPY scripts/tiers/constraints.txt /etc/ctf-pip-constraints.txt
+COPY scripts/image_tier.sh /usr/local/sbin/ctf-image-tier
+
+# One layer per stage, so a failure late in the build does not redo the early
+# ones. A critical tool that fails to install stops the build.
+RUN bash /usr/local/sbin/ctf-image-tier base
+RUN bash /usr/local/sbin/ctf-image-tier apt
+RUN bash /usr/local/sbin/ctf-image-tier gems
+
+# venv first on PATH so the agent's python3 and shell see these libraries.
+ENV PATH="/opt/venv/bin:${PATH}"
+ARG WITH_ANGR
+RUN bash /usr/local/sbin/ctf-image-tier python
+
+ARG WITH_PWNDBG
+ARG WITH_FOUNDRY
+ARG WITH_CYBEREDU_MCP
+RUN bash /usr/local/sbin/ctf-image-tier extras
+# Both are harmless when the piece is not installed: the gdb tools fall back to
+# plain gdb, and the MCP server is only started with CTF_PLATFORM=cyberedu.
+ENV CTF_GDB=pwndbg \
+    CTF_CYBEREDU_MCP_PYTHON=/opt/cyberedu-mcp/bin/python
+
+ARG SECLISTS
+RUN bash /usr/local/sbin/ctf-image-tier wordlists
+
+ARG WITH_GHIDRA
+ARG WITH_SAGE
+RUN bash /usr/local/sbin/ctf-image-tier heavy
+
+RUN bash /usr/local/sbin/ctf-image-tier finish
+
+# Tells the harness that tools named in its playbooks may be absent, so it says
+# which ones in the task prompt and does not offer wrappers for them. Unset in
+# the full image, where nothing changes.
+ENV CTF_IMAGE_TIER=${TIER}
+
+# --- the harness (same as the end of the main Dockerfile) -------------------
+WORKDIR /opt/ctf-harness
+COPY . /opt/ctf-harness
+RUN --network=none pip install --no-index --no-deps --no-build-isolation -e .
+ENV CTF_KNOWLEDGE_DIR=/opt/ctf-harness/knowledge
+RUN --network=none printf '#!/usr/bin/env bash\npython -c "from harness.agents.exttools import probe_tools; from harness.agents.tools import LocalExecutor; from pathlib import Path; print(sorted(probe_tools(LocalExecutor(), Path(\"/tmp\"))))"\n' \
+      > /usr/local/bin/ctf-tools && chmod +x /usr/local/bin/ctf-tools
+
+ENTRYPOINT ["/opt/ctf-harness/docker-entrypoint.sh"]
+CMD []

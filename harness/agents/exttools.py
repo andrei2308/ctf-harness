@@ -20,6 +20,7 @@ a flag found via decompilation or a memory dump grounds exactly like any other.
 from __future__ import annotations
 
 import os
+import re
 import select
 import shlex
 import shutil
@@ -125,6 +126,59 @@ def probe_tools(ctx_executor, work_dir: Path) -> set[str]:
     return found
 
 
+def image_tier() -> str:
+    """Which build of the image this is. "full" is the image every rehearsal ran
+    on, and what an unset CTF_IMAGE_TIER means; Dockerfile.slim sets the name of
+    a smaller tier, which has fewer tools than the playbooks name."""
+    return os.environ.get("CTF_IMAGE_TIER", "").strip().lower() or "full"
+
+
+# Probe names that the playbooks spell differently.
+_PLAYBOOK_NAMES = {
+    "analyzeHeadless": "ghidra", "qemu-aarch64-static": "qemu", "zbarimg": "zbar",
+    "d2j-dex2jar": "dex2jar", "r2": "radare2", "hcxpcapngtool": "hcxtools",
+    "bulk_extractor": "bulk-extractor", "volatility3": "volatility",
+}
+# What to reach for instead, where the stand-in is not obvious.
+_STAND_INS = {
+    "sage": "use `gp` (PARI/GP), `sympy`, `gmpy2`, `fpylll`",
+    "ghidra": "no `ghidra_decompile`: read code with `r2 -q -A -c 'pdf @ main' FILE`, "
+              "`objdump -d -M intel`, `gdb`",
+    "hashcat": "use `john`",
+    "yafu": "factor with `gp -q` or `sympy.factorint`",
+    "qemu": "a foreign-architecture binary cannot be run here: analyse it statically",
+    "jadx": "unzip the APK; `strings` and `r2` on classes.dex",
+    "forge": "use `web3` and `solc` from Python",
+    "tesseract": "look at pictures with `view_image`",
+    "hydra": "script the login loop in Python",
+}
+
+
+def missing_note(available: set[str], playbook: str) -> str:
+    """One line for the task prompt of a smaller image tier: the tools this
+    specialist's playbook names that are not installed, with a stand-in where
+    there is one. Without it the model spends a turn on `sage: command not
+    found` and another deciding what to do instead.
+
+    Empty in the full image (so its prompts are exactly the rehearsed ones) and
+    when the probe returned nothing (a failed probe must not declare every tool
+    missing)."""
+    if image_tier() == "full" or not available:
+        return ""
+    text = playbook.lower()
+    missing: dict[str, str] = {}
+    for probe in list(_PROBE_BINARIES) + list(_PROBE_PYMODULES):
+        name = _PLAYBOOK_NAMES.get(probe, probe)
+        if probe in available or name in available or name in missing:
+            continue
+        if re.search(r"(?<![a-z0-9_])" + re.escape(name.lower()), text):
+            missing[name] = _STAND_INS.get(name, "")
+    if not missing:
+        return ""
+    parts = [f"{n} ({why})" if why else n for n, why in sorted(missing.items())]
+    return "Not installed in this image, do not call them: " + "; ".join(parts) + "."
+
+
 class GdbTool(Tool):
     """Run gdb (with pwndbg/GEF if the sandbox's .gdbinit loads them) in BATCH
     mode against a binary. Never interactive — commands are supplied up front."""
@@ -199,6 +253,8 @@ class GhidraDecompileTool(Tool):
     """Decompile a binary to C with Ghidra headless (analyzeHeadless). Returns the
     decompiled C. Optionally restrict to one function to save tokens."""
 
+    needs = "ghidra"
+
     name = "ghidra_decompile"
     description = ("Decompile a binary to C using Ghidra headless. Give the binary "
                    "path and optionally a single function name (recommended once "
@@ -254,6 +310,8 @@ class GhidraDecompileTool(Tool):
 
 class VolatilityTool(Tool):
     """Run a Volatility 3 plugin against a memory image. Core forensics tool."""
+
+    needs = "volatility3"
 
     name = "volatility"
     description = ("Run a Volatility 3 plugin on a memory image (e.g. "

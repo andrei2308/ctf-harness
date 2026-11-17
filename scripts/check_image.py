@@ -7,15 +7,25 @@ Every command runs through LocalExecutor, the same stripped-down shell the agent
 gets (PATH only, HOME set to the work dir), so a tool that is installed but not
 visible to the agent shows up as a failure here. Exit code is the number of
 CRITICAL failures; optional ones are reported but do not fail the check.
+
+A smaller image tier (Dockerfile.slim) leaves tools out on purpose. Those are
+listed in scripts/tiers/<tier>.missing and reported as `[ -- ]`, apart from a
+tool that is missing because its install failed, which is still `[miss]`:
+
+    docker run --rm ctf-harness:base-core python scripts/check_image.py --strict
+
+With --strict the exit code also counts those unexpected misses.
 """
 
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 
 from harness.agents.tools import LocalExecutor  # noqa: E402
 
@@ -147,13 +157,44 @@ CHECKS: list[tuple[str, str, bool]] = [
 ]
 
 
+def image_tier() -> str:
+    """The tier this image was built as: written by Dockerfile.slim's last
+    stage; "full" for the main Dockerfile, which writes nothing."""
+    try:
+        for line in Path("/etc/ctf-image-tier").read_text().splitlines():
+            if line.startswith("tier="):
+                return line[5:].strip().lower() or "full"
+    except OSError:
+        pass
+    return os.environ.get("CTF_IMAGE_TIER", "").strip().lower() or "full"
+
+
+def left_out(tier: str) -> set[str]:
+    """Labels of the checks this tier is built not to pass."""
+    try:
+        lines = (ROOT / "scripts" / "tiers" / f"{tier}.missing").read_text().splitlines()
+    except OSError:
+        return set()
+    return {ln.strip() for ln in lines if ln.strip() and not ln.startswith("#")}
+
+
 def main() -> int:
+    strict = "--strict" in sys.argv[1:]
+    tier = image_tier()
+    by_design = left_out(tier)
     ex = LocalExecutor()
     work = Path(tempfile.mkdtemp(prefix="imgcheck-"))
-    failed_critical = failed_optional = 0
+    failed_critical = failed_optional = skipped = 0
+    if tier != "full":
+        print(f"image tier: {tier}")
     for label, cmd, critical in CHECKS:
         out, code = ex.run(cmd, work, 180)
         ok = code == 0
+        expected = not ok and not critical and label in by_design
+        if expected:
+            skipped += 1
+            print(f"[ -- ] {label}   (left out of the {tier} tier)")
+            continue
         if not ok:
             if critical:
                 failed_critical += 1
@@ -175,9 +216,13 @@ def main() -> int:
     else:
         print("[PASS] a planted ~/.profile is not sourced")
     total = len(CHECKS) + 1
-    print(f"\n{total - failed_critical - failed_optional}/{total} passed; "
-          f"{failed_critical} critical failure(s), {failed_optional} optional tool(s) missing")
-    return failed_critical
+    summary = (f"\n{total - failed_critical - failed_optional - skipped}/{total} passed; "
+               f"{failed_critical} critical failure(s), {failed_optional} optional tool(s) missing")
+    if tier != "full":
+        summary += (f" that the {tier} tier should have; "
+                    f"{skipped} left out of it by design")
+    print(summary)
+    return failed_critical + (failed_optional if strict else 0)
 
 
 if __name__ == "__main__":

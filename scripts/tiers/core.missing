@@ -1,0 +1,19 @@
+# Checks of scripts/check_image.py that the core tier does not pass BY DESIGN:
+# the tool is left out (scripts/tiers/core.conf). One check label per line,
+# exactly as check_image.py prints it. A missing tool that is not listed here
+# is a package that failed to install, and check_image.py says so.
+pwndbg loads (as the gdb tools run it)
+ghidra headless
+ghidra_decompile tool decompiles
+qemu-user
+sage factors
+tesseract
+ffmpeg / sox
+hashcat
+apktool / jadx
+forge / cast (foundry)
+forge outside /root (works as non-root)
+smbclient
+mysql / psql / redis-cli
+matplotlib / scipy
+node runs

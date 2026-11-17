@@ -21,7 +21,7 @@ from pathlib import Path
 
 from ..platforms.base import Challenge, ChallengeKind, ConnInfo
 from .exttools import (GdbTool, GhidraDecompileTool, InteractiveGdbTool,
-                       ViewImageTool, VolatilityTool)
+                       ViewImageTool, VolatilityTool, image_tier, missing_note)
 from .knowledge import KnowledgeSearchTool, primer
 from .limits import Limits
 from .tools import (HttpTool, ServiceConnectTool, ServiceRecvTool,
@@ -64,19 +64,30 @@ class Specialist(abc.ABC):
     @abc.abstractmethod
     def system_prompt(self) -> str: ...
 
-    def profile_for(self, conn: ConnInfo | None) -> ToolProfile:
+    def profile_for(self, conn: ConnInfo | None,
+                    available: set[str] | None = None) -> ToolProfile:
         """This specialist's tools, plus what a live target needs: connect/send/
         recv for a host:port, http for a URL. Routing goes by category first,
         so a forensics or crypto challenge can come with a service and must not
-        lose the tools to talk to it (rehearsal: hidden-cipher)."""
+        lose the tools to talk to it (rehearsal: hidden-cipher).
+
+        In a smaller image tier, a wrapper whose program the probe did not find
+        (`ghidra_decompile` without Ghidra) is left out, so the model is not
+        offered a tool that can only answer "not installed". The full image
+        keeps every tool, as rehearsed."""
         prof = self.profile()
-        names = {t.name for t in prof.tools}
+        tools = prof.tools
+        if available and image_tier() != "full":
+            tools = [t for t in tools if not t.needs or t.needs in available]
+        names = {t.name for t in tools}
         extra = []
         if conn and conn.host and conn.port and "connect" not in names:
             extra += [ServiceConnectTool(), ServiceSendTool(), ServiceRecvTool()]
         if conn and conn.url and "http" not in names:
             extra.append(HttpTool())
-        return ToolProfile(prof.name, prof.tools + extra) if extra else prof
+        if not extra and len(tools) == len(prof.tools):
+            return prof
+        return ToolProfile(prof.name, tools + extra)
 
     def task_prompt(self, challenge: Challenge, work_dir: Path,
                     conn: ConnInfo | None, files: list[Path],
@@ -112,6 +123,9 @@ class Specialist(abc.ABC):
             lines.append(f"This challenge requires {challenge.flags_required} flags.")
         if available:
             lines.append("Installed tools detected here: " + ", ".join(sorted(available)) + ".")
+            absent = missing_note(available, self.system_prompt())
+            if absent:
+                lines.append(absent)
         notes = primer(self.profile().name,
                        hint=" ".join([challenge.name, challenge.category,
                                       challenge.description] + [p.name for p in files]),

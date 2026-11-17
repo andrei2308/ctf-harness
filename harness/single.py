@@ -31,6 +31,7 @@ from .agents.tools import ToolContext
 from .config import Config, config_from_env, make_model_factory, make_platform
 from . import egress
 from .flags.decoys import known_decoys
+from .flags.grounding import format_check
 from .flags.submit import FlagSubmitter
 from .platforms.base import Challenge, Platform, PlatformError
 from .scheduler.budget import Budget, BudgetExceeded
@@ -117,9 +118,14 @@ def run_challenge(*, challenge: Challenge, platform: Platform, ladder: Ladder,
     # Flag-shaped strings shipped in the harness's own directories are never the
     # answer in the contest; with the fixtures rig they ARE the answers.
     decoys = frozenset() if platform.answers_on_disk else known_decoys()
+    # A hash format stated by the challenge (e.g. "DCTF{sha256}") rules out
+    # planted lookalikes such as "DCTF{Try Hard...}".
+    check = format_check(challenge.description)
     state = new_state(cid, work_dir, ctx, system_prompt=sys_p, task_prompt=task_p,
-                      ignore_flags=decoys)
+                      ignore_flags=decoys, flag_check=check)
     log.event("challenge.decoys", challenge=cid, ignored=len(decoys))
+    if check is not None:
+        log.event("challenge.flag_format", challenge=cid, hex_lengths=check.lengths)
     log.event("challenge.prepared", challenge=cid, specialist=specialist.profile().name,
               files=len(files), has_target=conn is not None,
               flags_required=challenge.flags_required)

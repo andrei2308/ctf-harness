@@ -102,8 +102,9 @@ class SolverState:
 
 def new_state(challenge_id: str, work_dir: Path, ctx: ToolContext,
               system_prompt: str, task_prompt: str,
-              ignore_flags: frozenset[str] = frozenset()) -> SolverState:
-    store = EvidenceStore(pattern=flag_pattern(), ignore=ignore_flags)
+              ignore_flags: frozenset[str] = frozenset(),
+              flag_check=None) -> SolverState:
+    store = EvidenceStore(pattern=flag_pattern(), ignore=ignore_flags, accept=flag_check)
     messages = [
         Message(role="system", content=system_prompt),
         Message(role="user", content=task_prompt),

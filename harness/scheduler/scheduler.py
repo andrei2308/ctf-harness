@@ -41,6 +41,7 @@ from ..platforms.base import Challenge, Platform, PlatformError
 from ..telemetry.run_log import RunLog
 from .budget import Budget, BudgetExceeded
 from .ladder import Ladder
+from ..flags.grounding import format_check
 
 ModelFactory = Callable[[ModelSpec], Model]
 
@@ -278,7 +279,8 @@ class Scheduler:
         state = new_state(c.id, work_dir, ctx,
                           system_prompt=specialist.system_prompt(),
                           task_prompt=specialist.task_prompt(c, work_dir, conn, files,
-                                                             available=self._available))
+                                                             available=self._available),
+                          flag_check=format_check(c.description))
         self.log.event("scheduler.prepared", challenge=c.id,
                        specialist=specialist.profile().name, files=len(files),
                        has_target=conn is not None)

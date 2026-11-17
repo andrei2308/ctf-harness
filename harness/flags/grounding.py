@@ -58,6 +58,31 @@ def flag_pattern() -> re.Pattern[bytes]:
     return VARIANT_FLAG_RE
 
 
+_HASH_HINT = re.compile(r"[A-Za-z0-9_]*\{\s*(sha-?256|sha-?1|md5)\b", re.IGNORECASE)
+_HASH_HEX = {"sha256": 64, "sha-256": 64, "sha1": 40, "sha-1": 40, "md5": 32}
+
+
+def format_check(text: str):
+    """A check for flag bodies, from a format the challenge states, or None.
+
+    "Flag format: DCTF{sha256}" or "ctf{sha256(flag)}" means the body is a
+    64-character hex digest. In rehearsal (investigator) the agent's tool output
+    contained a planted "DCTF{Try Hard...}" next to the real flag; it was
+    grounded, so it went out as a wrong submission. Only hash formats are
+    understood; anything else imposes no check."""
+    lengths = {_HASH_HEX[m.group(1).lower()] for m in _HASH_HINT.finditer(text or "")}
+    if not lengths:
+        return None
+    pats = [re.compile(rf"[0-9a-fA-F]{{{n}}}") for n in sorted(lengths)]
+
+    def check(flag: str) -> bool:
+        i, j = flag.find("{"), flag.rfind("}")
+        body = flag[i + 1:j] if 0 <= i < j else ""
+        return any(p.fullmatch(body) for p in pats)
+    check.lengths = sorted(lengths)          # for the log
+    return check
+
+
 def candidates(pattern: re.Pattern[bytes], data: bytes) -> list[bytes]:
     """Every flag candidate `pattern` finds in `data`, in order, de-duplicated."""
     out: list[bytes] = []
@@ -106,8 +131,12 @@ class EvidenceStore:
     """
 
     def __init__(self, pattern: re.Pattern[bytes] | None = None, max_bytes: int = 32 * 1024 * 1024,
-                 ignore: frozenset[str] = frozenset()):
+                 ignore: frozenset[str] = frozenset(), accept=None):
         self._pattern = pattern or DEFAULT_FLAG_RE
+        # A flag-format check (format_check); a candidate it rejects is not
+        # latched, so it is never auto-submitted. Rejects are kept for the log.
+        self._accept = accept
+        self.rejected: list[str] = []
         # Flag-shaped strings known not to be the answer (see flags/decoys.py).
         self._ignore = ignore
         self._items: list[Evidence] = []
@@ -143,6 +172,10 @@ class EvidenceStore:
         for raw in candidates(self._pattern, haystack):
             flag = raw.decode("utf-8", "replace")
             if flag in self._ignore:
+                continue
+            if self._accept is not None and not self._accept(flag):
+                if flag not in self.rejected:
+                    self.rejected.append(flag)
                 continue
             if flag not in self._latched:
                 gf = GroundedFlag(flag=flag, raw=raw, source=source, evidence_seq=ev.seq)

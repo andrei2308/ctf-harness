@@ -66,3 +66,25 @@ def test_a_flag_body_cannot_span_prose_with_braces():
 def test_harness_source_examples_are_decoys():
     from harness.flags.decoys import known_decoys
     assert "CTF{...}" in known_decoys()           # e.g. the submit_flag description
+
+
+def test_a_stated_hash_format_rules_out_lookalike_flags():
+    # investigator (rehearsal): a planted "DCTF{Try Hard...}" sat next to the
+    # real flag and went out as a wrong submission. Format: DCTF{sha256}.
+    from harness.flags.grounding import EvidenceStore, flag_pattern, format_check
+    real = "DCTF{" + "82c149f2" * 8 + "}"
+    check = format_check("Flags to find:\n1. What is the flag? (format: DCTF{sha256})")
+    s = EvidenceStore(pattern=flag_pattern(), accept=check)
+    got = [g.flag for g in s.record("t", f"DCTF{{Try Hard Harder}} ... {real}".encode())]
+    # The default pattern yields bare and prefixed forms; both are judged.
+    assert real in got and not any("Try Hard" in g for g in got)
+    assert s.rejected and all("Try Hard" in r for r in s.rejected)
+
+
+def test_format_check_reads_common_hints_and_stays_out_of_the_way_otherwise():
+    from harness.flags.grounding import format_check
+    assert format_check("format: ctf{sha256(flag)}")("ctf{" + "a" * 64 + "}")
+    assert not format_check("format: ctf{sha256(flag)}")("ctf{password}")
+    assert format_check("CTF{md5}")("CTF{" + "0" * 32 + "}")
+    assert format_check("Find the flag.") is None
+    assert format_check("Flag format: CTF{...}") is None

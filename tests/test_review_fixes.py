@@ -412,3 +412,16 @@ def test_task_prompt_states_the_scope_when_there_is_a_target():
     ch = Challenge(id="c", name="w", category="web")
     assert "Other ports on the same host" in route(ch, _T).task_prompt(ch, Path("/w"), _T, [])
     assert "Scope:" not in route(ch, None).task_prompt(ch, Path("/w"), None, [])
+
+
+def test_a_backgrounded_scanner_is_refused_and_a_foreground_one_runs():
+    # stayin-alive: `nohup ffuf -t 40 ... &` knocked the challenge service over.
+    from harness.agents.tools import background_scan
+    assert background_scan("nohup ffuf -w w.txt -u http://h:1/FUZZ -t 40 -o o.txt 2>/dev/null & echo started")
+    assert background_scan("ffuf -u http://h/FUZZ -w w &")
+    assert background_scan("gobuster dir -u http://h -w w & sleep 5")
+    assert background_scan("ffuf -u http://h/FUZZ -w w && echo done") is None   # '&&' is not background
+    assert background_scan("ffuf -u http://h/FUZZ -w w &> out.txt") is None      # '&>' is a redirect
+    assert background_scan("ffuf -u http://h/FUZZ -w w -t 10 -rate 50 2>&1 | head") is None
+    assert background_scan("python3 -m http.server 8000 &") is None      # not a scanner
+    assert background_scan("curl -s http://h/ 2>&1") is None

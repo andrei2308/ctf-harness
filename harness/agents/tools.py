@@ -305,6 +305,22 @@ def scope_violation(cmd: str, conn: "ConnInfo | None") -> str | None:
     return None
 
 
+_BG_SCANNER = re.compile(r"\b(ffuf|feroxbuster|gobuster|dirsearch|dirb|wfuzz|nikto|sqlmap|hydra)\b")
+
+
+def background_scan(cmd: str) -> str | None:
+    """A scanner sent to the background escapes every time limit and keeps
+    loading the target after the tool call returns. In rehearsal
+    (stayin-alive) `nohup ffuf -t 40 ... &` knocked a small challenge service
+    over; the agent then lost minutes waiting for it to come back. Scanners
+    run in the foreground, where the tool timeout applies."""
+    if not _BG_SCANNER.search(cmd):
+        return None
+    # A lone '&' (not '&&', '2>&1', '&>' or '|&') sends the job to the background.
+    backgrounded = bool(re.search(r"\bnohup\b|\bsetsid\b|(?<![&>|<0-9])&(?![&>])", cmd))
+    return "a scanner sent to the background" if backgrounded else None
+
+
 def harness_violation(cmd: str, work_dir: Path) -> str | None:
     """Why `cmd` is aimed at the harness's own files, or None.
 
@@ -359,6 +375,11 @@ class ShellTool(Tool):
             return ToolResult(self.name, b"", "shell:out-of-scope", error=(
                 f"refused: {why}. Your only target is the service given in the task; "
                 "other ports and hosts belong to other people."))
+        why = background_scan(cmd)
+        if why:
+            return ToolResult(self.name, b"", "shell:background-scan", error=(
+                f"refused: {why}. Run scanners in the foreground and gently (a few "
+                "threads, a rate limit): a challenge service is small and can fall over."))
         why = harness_violation(cmd, ctx.work_dir)
         if why:
             return ToolResult(self.name, b"", "shell:harness", error=(

@@ -88,3 +88,10 @@ def test_format_check_reads_common_hints_and_stays_out_of_the_way_otherwise():
     assert format_check("CTF{md5}")("CTF{" + "0" * 32 + "}")
     assert format_check("Find the flag.") is None
     assert format_check("Flag format: CTF{...}") is None
+
+
+def test_format_check_reads_sha256sum():
+    # DefCamp CTF 2025 (task 8, read-only): "format: ctf{sha256sum}".
+    from harness.flags.grounding import format_check
+    chk = format_check("1. What is the flag? (format: ctf{sha256sum})")
+    assert chk and chk("ctf{" + "a" * 64 + "}") and not chk("ctf{try_harder}")

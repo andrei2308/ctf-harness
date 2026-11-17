@@ -58,7 +58,8 @@ def flag_pattern() -> re.Pattern[bytes]:
     return VARIANT_FLAG_RE
 
 
-_HASH_HINT = re.compile(r"[A-Za-z0-9_]*\{\s*(sha-?256|sha-?1|md5)\b", re.IGNORECASE)
+# "sum" too: DefCamp CTF 2025 states its format as ctf{sha256sum}.
+_HASH_HINT = re.compile(r"[A-Za-z0-9_]*\{\s*(sha-?256|sha-?1|md5)(?:sum)?\b", re.IGNORECASE)
 _HASH_HEX = {"sha256": 64, "sha-256": 64, "sha1": 40, "sha-1": 40, "md5": 32}
 
 

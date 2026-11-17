@@ -574,9 +574,26 @@ def _speedy(tokens, seconds, monkeypatch):
 
 def test_preflight_warns_when_a_full_reply_cannot_fit_the_request_limit(monkeypatch):
     monkeypatch.setenv("CTF_MODEL_TIMEOUT", "180")
+    monkeypatch.delenv("CTF_MIN_OUTPUT_TOKENS", raising=False)
     ok, detail = _speedy(tokens=500, seconds=10, monkeypatch=monkeypatch)     # 50 tokens/s
     assert not ok and "CTF_MAX_OUTPUT_TOKENS=7168" in detail and "655 s" in detail
     ok, detail = _speedy(tokens=5000, seconds=10, monkeypatch=monkeypatch)    # 500 tokens/s
     assert ok and "inside the 180 s" in detail
     ok, detail = _speedy(tokens=10, seconds=1, monkeypatch=monkeypatch)
     assert ok and "too little output" in detail
+
+
+def test_preflight_never_advises_a_cap_below_the_output_floor(monkeypatch):
+    # GLM on the day of the pre-freeze check: ~29 tokens/s from one short
+    # reply, limit 180 s -> 4096, which would override the 8192 floor (the cap
+    # wins) and bring back the turns a reasoning model thinks away.
+    monkeypatch.setenv("CTF_MODEL_TIMEOUT", "180")
+    monkeypatch.setenv("CTF_MIN_OUTPUT_TOKENS", "8192")
+    ok, detail = _speedy(tokens=290, seconds=10, monkeypatch=monkeypatch)     # 29 tokens/s
+    assert not ok and "CTF_MAX_OUTPUT_TOKENS=8192, not lower" in detail
+    assert "CTF_MAX_OUTPUT_TOKENS=4096" not in detail
+    ok, detail = _speedy(tokens=500, seconds=10, monkeypatch=monkeypatch)     # 50 tokens/s: 7168 < 8192
+    assert "CTF_MAX_OUTPUT_TOKENS=8192, not lower" in detail
+    monkeypatch.setenv("CTF_MIN_OUTPUT_TOKENS", "4096")
+    ok, detail = _speedy(tokens=500, seconds=10, monkeypatch=monkeypatch)     # above that floor: as before
+    assert "CTF_MAX_OUTPUT_TOKENS=7168, or raise" in detail

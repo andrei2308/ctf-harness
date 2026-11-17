@@ -159,11 +159,22 @@ def run(config: Config, model_factory=None) -> list[tuple[str, bool, str]]:
             return (f"about {speed:.0f} output tokens/s: a full {top}-token reply takes "
                     f"about {top / speed:.0f} s, inside the {limit:.0f} s request limit")
         fits = max(2048, int(0.8 * speed * limit) // 1024 * 1024)
+        # The cap wins over the floor (config.fit), so advice below
+        # CTF_MIN_OUTPUT_TOKENS would undo check 6: GLM at 4096 spent whole
+        # turns thinking and never acted. Never advise less than the floor.
+        floor = int(os.environ.get("CTF_MIN_OUTPUT_TOKENS") or 0)
+        if floor and fits < floor:
+            advice = (f"set CTF_MAX_OUTPUT_TOKENS={floor}, not lower: below "
+                      f"CTF_MIN_OUTPUT_TOKENS={floor} a reasoning model can think away the "
+                      f"whole reply (check 6). A full {floor}-token reply takes about "
+                      f"{floor / speed:.0f} s at this speed")
+        else:
+            advice = f"set CTF_MAX_OUTPUT_TOKENS={fits}, or raise the limit"
         raise ModelError(
             f"about {speed:.0f} output tokens/s: a full {top}-token reply would take about "
             f"{top / speed:.0f} s, past the {limit:.0f} s request limit (CTF_MODEL_TIMEOUT), "
-            f"and return nothing  -> set CTF_MAX_OUTPUT_TOKENS={fits}, or raise the limit. "
-            "The estimate comes from one reply; treat it as rough")
+            f"and return nothing  -> {advice}. The estimate comes from one short reply, "
+            "which includes the request's fixed latency, so it reads low; treat it as rough")
 
     attempt("8. a full-length reply fits inside the request time limit", reply_fits)
 

@@ -1,5 +1,6 @@
 """Transcript logging, the token diet, and the time budget."""
 
+from echo_fake import hide, shown
 import io
 import json
 import os
@@ -43,7 +44,7 @@ class _Out(Tool):
     def input_schema(self): return {"type": "object", "properties": {}}
     def run(self, args, ctx):
         time.sleep(float(args.get("sleep", 0)))
-        return ToolResult(self.name, str(args.get("text", "")).encode(), "out:x", exit_code=0)
+        return ToolResult(self.name, shown(args.get("text", "")), "out:x", exit_code=0)
 
 
 class _Fn(Model):
@@ -56,6 +57,8 @@ class _Fn(Model):
 
 
 def _call(n, **args):
+    if "text" in args:
+        args["text"] = hide(args["text"])
     return ModelResponse(text=f"step {n}", tool_calls=(ToolCall(f"c{n}", "out", args),),
                          usage=Usage(7, 3), spec=SPEC)
 
@@ -143,7 +146,7 @@ def test_log_records_what_the_agent_did():
     log.close()
     ev = _events(log)
     calls = [e for e in ev if e["kind"] == "tool.call"]
-    assert calls[0]["tool"] == "out" and calls[0]["args"] == "nothing yet"
+    assert calls[0]["tool"] == "out" and calls[0]["args"] == hide("nothing yet")
     obs = [e for e in ev if e["kind"] == "tool.observe"]
     assert obs[0]["output"] == "nothing yet" and obs[0]["exit_code"] == 0
     turns = [e for e in ev if e["kind"] == "model.turn"]

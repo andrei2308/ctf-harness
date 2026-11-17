@@ -1,6 +1,9 @@
 """Changes made after the CyberEDU rehearsal: guards that do not misfire, what
 the model is told about submissions and time, and the contest-day adapter kit."""
 
+from base64 import b64encode
+
+from echo_fake import hide, shown
 import io
 import json
 import sys
@@ -118,7 +121,7 @@ class _Out(Tool):
     description = "echo"
     def input_schema(self): return {"type": "object", "properties": {}}
     def run(self, args, ctx):
-        return ToolResult(self.name, str(args.get("text", "")).encode(), "out:x")
+        return ToolResult(self.name, shown(args.get("text", "")), "out:x")
 
 
 class _Fn(Model):
@@ -158,7 +161,7 @@ def _solver(model, tmp, *, caps=None, penalize=False, flag_check=None, plat=None
 
 
 def _say(n, text):
-    return ModelResponse(tool_calls=(ToolCall(f"c{n}", "out", {"text": text}),), usage=Usage(1, 1))
+    return ModelResponse(tool_calls=(ToolCall(f"c{n}", "out", {"text": hide(text)}),), usage=Usage(1, 1))
 
 
 def _tool_texts(state):
@@ -291,7 +294,7 @@ def test_run_survives_unwritable_work_and_log_dirs(tmp_path):
     res = run_challenge(challenge=plat.get_challenge("c"), platform=plat,
                         ladder=Ladder([Rung(SPEC, 2)]),
                         model_factory=lambda s: _Fn(lambda n, m, t: ModelResponse(tool_calls=(
-                            ToolCall(f"c{n}", "shell", {"cmd": f"echo '{REAL}'"}),)), s),
+                            ToolCall(f"c{n}", "shell", {"cmd": f"echo {b64encode(REAL.encode()).decode()} | base64 -d"}),)), s),
                         budget=Budget(Caps()), log=log, submitter=FlagSubmitter(plat, log),
                         executor=LocalExecutor(), work_root=blocker / "work", available=set(),
                         plan_first=False)

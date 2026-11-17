@@ -120,3 +120,26 @@ def test_a_stated_length_regex_is_enforced():
     from harness.flags.grounding import format_check
     chk = format_check("1. What is the flag? (format: CTF{.{27}} (a regex for the length))")
     assert chk("CTF{" + "a" * 27 + "}") and not chk("CTF{this_is_a_decoy}")
+
+
+def test_a_value_the_command_itself_carried_does_not_ground():
+    # zodiac (pre-freeze, offline suite): the model printed its own guesses,
+    # `python3 -c "for f in ['ctf{a}', ...]: print(f)"` and `echo "ctf{b}"`;
+    # each was latched as grounded and auto-submitted (7 wrong).
+    from harness.flags.grounding import EvidenceStore
+    s = EvidenceStore()
+    assert s.record("shell:echo", b"ctf{my_guess}\n", cmd='echo "ctf{my_guess}"') == []
+    assert s.record("shell:python3", b"ctf{one}\nctf{two}\n",
+                    cmd='{"cmd":"python3 -c \\"for f in [\'ctf{one}\', \'ctf{two}\']: print(f)\\"","timeout":30}') == []
+    assert s.contains("ctf{my_guess}") is None          # a prose claim of it is not grounded either
+    assert s.contains_independent("ctf{one}") is None
+    # A command that did not contain it grounds it, even after the echo.
+    got = s.record("shell:./chall", b"you win: ctf{my_guess}\n", cmd="./chall < in.txt")
+    assert [g.flag for g in got] == ["ctf{my_guess}"]
+    assert s.contains("ctf{my_guess}") is not None
+    # Quotes inside a value are matched in JSON-escaped arguments too.
+    t = EvidenceStore()
+    assert t.record("shell:x", b'ctf{say "hi"}', cmd='{"cmd":"echo \'ctf{say \\"hi\\"}\'","timeout":5}') == []
+    # Decoding something is not printing a literal: grounded.
+    cmd = "python3 -c \"print(bytes.fromhex('6374667b6465636f6465647d').decode())\""
+    assert [g.flag for g in t.record("shell:py", b"ctf{decoded}", cmd=cmd)] == ["ctf{decoded}"]

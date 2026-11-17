@@ -1,5 +1,8 @@
 """Contest readiness: reasoning models, decoy flags, hashed fixture answers."""
 
+from base64 import b64encode
+
+from echo_fake import hide, shown
 import hashlib
 import json
 import subprocess
@@ -36,7 +39,7 @@ class _Out(Tool):
     description = "echo"
     def input_schema(self): return {"type": "object", "properties": {}}
     def run(self, args, ctx):
-        return ToolResult(self.name, str(args.get("text", "")).encode(), "out:x")
+        return ToolResult(self.name, shown(args.get("text", "")), "out:x")
 
 
 class _Fn(Model):
@@ -84,7 +87,7 @@ def test_cut_off_turn_doubles_the_cap_up_to_the_ceiling(tmp_path):
     def fn(n, messages, tools):
         if n <= 3:
             return ModelResponse(text="", stop_reason="length", usage=Usage(10, 4096))
-        return ModelResponse(tool_calls=(ToolCall("1", "out", {"text": REAL}),))
+        return ModelResponse(tool_calls=(ToolCall("1", "out", {"text": hide(REAL)}),))
     model = _Fn(fn, ModelSpec(name="m", max_tokens=4096))
     solver, state, log = _solver(model, tmp_path, Limits(max_output_tokens=10000))
     assert solver.run().outcome == Outcome.SOLVED
@@ -100,7 +103,7 @@ def test_learned_cap_carries_into_the_next_attempt(tmp_path):
     cut = lambda n, m, t: ModelResponse(text="", stop_reason="length")
     solver, state, _ = _solver(_Fn(cut, ModelSpec(name="m", max_tokens=4096)), tmp_path)
     solver.run()
-    nxt = _Fn(lambda n, m, t: ModelResponse(tool_calls=(ToolCall("1", "out", {"text": REAL}),)),
+    nxt = _Fn(lambda n, m, t: ModelResponse(tool_calls=(ToolCall("1", "out", {"text": hide(REAL)}),)),
               ModelSpec(name="m", max_tokens=8192))
     Solver(model=nxt, profile=ToolProfile("t", [_Out()]), state=state, budget=Budget(Caps()),
            log=solver.log, submitter=solver.submitter, plan_first=False, limits=Limits()).run()
@@ -165,7 +168,7 @@ def test_contest_run_ignores_shipped_toy_flags_but_the_fixture_rig_does_not(tmp_
     toy = json.loads((REPO_ROOT / "fixtures/warmup-01/challenge.json").read_text())["flag"]
     spec = ModelSpec(name="m", effort=Effort.LOW)
     wander = lambda n, m, t: ModelResponse(tool_calls=(ToolCall(
-        f"c{n}", "shell", {"cmd": f"echo '{toy}'; echo '{REAL}'"}),))
+        f"c{n}", "shell", {"cmd": f"echo {b64encode((toy + chr(10) + REAL).encode()).decode()} | base64 -d"}),))
     plat = _Remote()
     log = RunLog(tmp_path / "l")
     res = run_challenge(challenge=plat.get_challenge("c"), platform=plat,

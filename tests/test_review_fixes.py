@@ -1,6 +1,7 @@
 """Regression tests for the defects found in review. Each one failed before its
 fix; none of them was reachable with the scripted models the suite used."""
 
+from echo_fake import hide, shown
 import json
 import shutil
 import tempfile
@@ -58,7 +59,7 @@ class _Out(Tool):
     description = "echo"
     def input_schema(self): return {"type": "object", "properties": {"text": {"type": "string"}}}
     def run(self, args, ctx):
-        return ToolResult(self.name, str(args.get("text", "")).encode(), "out:x")
+        return ToolResult(self.name, shown(args.get("text", "")), "out:x")
 
 
 class _Fn(Model):
@@ -72,7 +73,7 @@ class _Fn(Model):
 
 
 def _call(n, text):
-    return ModelResponse(tool_calls=(ToolCall(f"c{n}", "out", {"text": text}),),
+    return ModelResponse(tool_calls=(ToolCall(f"c{n}", "out", {"text": hide(text)}),),
                          usage=Usage(5, 5), spec=SPEC)
 
 
@@ -180,7 +181,7 @@ def test_solver_keeps_tool_calls_on_the_assistant_turn():
     solver, _, _, state = _solver(model)
     assert solver.run().outcome == Outcome.SOLVED
     assistant = [m for m in state.messages if m.role == "assistant"]
-    assert assistant[0].tool_calls[0].arguments == {"text": "nothing"}
+    assert assistant[0].tool_calls[0].arguments == {"text": hide("nothing")}
     tool = [m for m in state.messages if m.role == "tool"]
     assert tool[0].tool_call_id == assistant[0].tool_calls[0].id
 
@@ -213,9 +214,9 @@ def test_compaction_never_orphans_a_tool_result():
     def fn(n, m):
         if n == 6:
             raise ContextOverflow("too long")
-        return ModelResponse(tool_calls=(ToolCall(f"a{n}", "out", {"text": "x%d" % n}),
-                                         ToolCall(f"b{n}", "out", {"text": "y%d" % n}),
-                                         ToolCall(f"d{n}", "out", {"text": "z%d" % n})),
+        return ModelResponse(tool_calls=(ToolCall(f"a{n}", "out", {"text": hide("x%d" % n)}),
+                                         ToolCall(f"b{n}", "out", {"text": hide("y%d" % n)}),
+                                         ToolCall(f"d{n}", "out", {"text": hide("z%d" % n)})),
                              usage=Usage(5, 5), spec=SPEC)
     solver, _, _, state = _solver(_Fn(fn), max_iterations=7)
     solver.run()

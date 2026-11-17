@@ -23,6 +23,7 @@ loose enough for multi-stage/odd flags — tune from real challenges.
 from __future__ import annotations
 
 import os
+import json
 import re
 from dataclasses import dataclass, field
 
@@ -128,6 +129,14 @@ def candidates(pattern: re.Pattern[bytes], data: bytes) -> list[bytes]:
     return out
 
 
+def _in_command(value: str, cmd: str) -> bool:
+    """Does the command text carry `value`? Tool arguments are logged as the
+    bare command, or as JSON when there are several (quotes escaped)."""
+    if not cmd or not value:
+        return False
+    return value in cmd or json.dumps(value, ensure_ascii=False)[1:-1] in cmd
+
+
 @dataclass
 class Evidence:
     """One piece of real tool output."""
@@ -201,6 +210,13 @@ class EvidenceStore:
             flag = raw.decode("utf-8", "replace")
             if flag in self._ignore:
                 continue
+            if _in_command(flag, cmd):
+                # The command carried the value itself: the model's own guess
+                # printed back, not evidence (zodiac, pre-freeze: a python
+                # list of five spellings and an `echo "ctf{...}"` went out as
+                # seven grounded wrong submissions). A command that did not
+                # contain it can still ground it later.
+                continue
             if self._accept is not None and not self._accept(flag):
                 if flag not in self.rejected:
                     self.rejected.append(flag)
@@ -241,7 +257,7 @@ class EvidenceStore:
             return None
         needle = value.encode("utf-8", "surrogatepass")
         for ev in self._items:
-            if value in ev.cmd:
+            if _in_command(value, ev.cmd):
                 continue
             if ev.data.find(needle) != -1:
                 return GroundedFlag(flag=value, raw=needle, source=ev.source,
@@ -259,6 +275,8 @@ class EvidenceStore:
             return self._latched[flag]
         needle = flag.encode("utf-8", "surrogatepass")
         for ev in self._items:
+            if _in_command(flag, ev.cmd):
+                continue                    # its own command printed it: a guess
             idx = ev.data.find(needle)
             if idx != -1:
                 return GroundedFlag(flag=flag, raw=needle, source=ev.source,

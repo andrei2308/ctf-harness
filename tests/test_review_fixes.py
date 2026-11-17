@@ -291,11 +291,25 @@ def test_model_errors_are_retried_with_backoff(monkeypatch):
     monkeypatch.setattr(solver_mod, "_sleep", waits.append)
     def fn(n, m):
         if n <= 2:
-            raise ModelError("429 rate limited")
+            raise ModelError("502 bad gateway")
         return _call(n, FLAG)
     solver, _, _, _ = _solver(_Fn(fn))
     assert solver.run().outcome == Outcome.SOLVED
     assert waits == list(solver_mod.MODEL_RETRY_DELAYS[:2])
+
+
+def test_a_rate_limit_is_waited_out_longer(monkeypatch):
+    # Rehearsal: the GLM endpoint answered 429 for about two minutes.
+    waits = []
+    monkeypatch.setattr(solver_mod, "_sleep", waits.append)
+    def fn(n, m):
+        if n <= 6:
+            raise ModelError("Error code: 429 - Rate limit reached for requests")
+        return _call(n, FLAG)
+    solver, _, _, _ = _solver(_Fn(fn))
+    assert solver.run().outcome == Outcome.SOLVED
+    assert waits == list(solver_mod.RATE_LIMIT_DELAYS[:6])
+    assert sum(waits) > 120                       # outlasts the window seen
 
 
 def test_dead_endpoint_ends_the_attempt_as_error():

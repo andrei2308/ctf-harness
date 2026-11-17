@@ -39,6 +39,11 @@ _TRIM_MARK = "[older output trimmed to save tokens]"
 # Waits between retries of a failed model call (rate limit, 5xx, overload). The
 # endpoint is shared by every team at the event, so blips are expected.
 MODEL_RETRY_DELAYS = (2.0, 5.0, 10.0, 20.0, 30.0)
+# A rate limit (HTTP 429) outlasts those: in rehearsal the GLM endpoint
+# answered 429 to every call for about two minutes, the attempt errored out and
+# the ladder burnt its rungs in a second. The contest endpoint is shared by
+# every team. Wait longer, still never past the time budget.
+RATE_LIMIT_DELAYS = (15.0, 30.0, 60.0, 60.0, 60.0, 60.0)
 # Consecutive turns with no tool call (and no accepted flag) before the attempt
 # counts as stalled. Each one gets a nudge to act first.
 MAX_PROSE_TURNS = 2
@@ -583,7 +588,8 @@ class Solver:
         ModelError once the retries are spent or the time cap is too close to
         wait; ContextOverflow passes straight through for the caller to compact."""
         cid = self.state.challenge_id
-        for i in range(len(MODEL_RETRY_DELAYS) + 1):
+        i = 0
+        while True:
             # A model call must end inside the budget, leaving the reserve for
             # the last submit and the log, exactly as tool calls do.
             self._cap_request()
@@ -592,13 +598,17 @@ class Solver:
             except ContextOverflow:
                 raise
             except ModelError as e:
-                if i == len(MODEL_RETRY_DELAYS):
+                text = str(e).lower()
+                delays = (RATE_LIMIT_DELAYS if "429" in text or "rate limit" in text
+                          else MODEL_RETRY_DELAYS)
+                if i >= len(delays):
                     raise
-                delay = MODEL_RETRY_DELAYS[i]
+                delay = delays[i]
+                i += 1
                 left = self.budget.seconds_left()
                 if left is not None and left <= delay:
                     raise
-                self.log.event("solver.model_retry", challenge=cid, attempt=i + 1,
+                self.log.event("solver.model_retry", challenge=cid, attempt=i,
                                wait=delay, error=str(e)[:300])
                 _sleep(delay)
 

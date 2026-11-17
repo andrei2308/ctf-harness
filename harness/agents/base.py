@@ -512,6 +512,10 @@ class Solver:
         wait; ContextOverflow passes straight through for the caller to compact."""
         cid = self.state.challenge_id
         for i in range(len(MODEL_RETRY_DELAYS) + 1):
+            # A model call must end inside the budget, leaving the reserve for
+            # the last submit and the log, exactly as tool calls do.
+            left = self._tool_time_left()
+            self.model.request_timeout = None if left is None else max(1.0, left)
             try:
                 return self.model.complete(self.state.messages, self.profile.schemas())
             except ContextOverflow:

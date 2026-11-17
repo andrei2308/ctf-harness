@@ -103,7 +103,11 @@ class AnthropicModel(Model):
             kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
 
         try:
-            resp = client.messages.create(**kwargs)
+            extra = {}
+            if self.request_timeout is not None:
+                extra["timeout"] = min(self.request_timeout,
+                                       float(os.environ.get("CTF_MODEL_TIMEOUT") or 300))
+            resp = client.messages.create(**kwargs, **extra)
         except Exception as e:  # pragma: no cover - vendor exceptions
             msg = str(e).lower()
             if "context" in msg and ("long" in msg or "exceed" in msg or "maximum" in msg):

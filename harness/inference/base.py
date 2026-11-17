@@ -136,6 +136,11 @@ class ContextOverflow(ModelError):
 class Model(abc.ABC):
     """A resolved, callable model at a fixed spec."""
 
+    # Seconds the next request may take, set by the solver from the time
+    # budget left (None = the adapter's own default). In rehearsal one GLM call
+    # ran 526 s with 374 s of budget left, so the run overran its limit by 153 s.
+    request_timeout: float | None = None
+
     def __init__(self, spec: ModelSpec):
         self.spec = spec
 

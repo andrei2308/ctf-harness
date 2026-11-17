@@ -218,3 +218,61 @@ def test_hash_flags_script_removes_plaintext(tmp_path):
     plat = FilesTargetPlatform(root)
     assert plat.submit_flag("t1", "CTF{from_file}").accepted
     assert plat.submit_flag("t2", "CTF{y}").accepted and plat.get_challenge("t2").flags_required == 2
+
+
+def test_a_model_call_is_capped_by_the_time_left():
+    # universe (rehearsal): one GLM call ran 526 s with 374 s of budget left,
+    # and the run overran its limit by 153 s.
+    from types import SimpleNamespace
+    from harness.inference.base import Message, ModelSpec
+    from harness.inference.openai_client import OpenAIModel
+    sent = []
+    resp = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="ok", tool_calls=None),
+                                                    finish_reason="stop")],
+                           usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1,
+                                                 prompt_tokens_details=None))
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(
+        create=lambda **kw: sent.append(kw) or resp)))
+    m = OpenAIModel(ModelSpec(name="m"), client=client)
+    m.complete([Message("user", "x")])
+    assert "timeout" not in sent[-1]                     # no budget: the default
+    m.request_timeout = 42.0
+    m.complete([Message("user", "x")])
+    assert sent[-1]["timeout"] == 42.0
+
+
+def test_the_solver_sets_the_request_timeout_from_the_budget(tmp_path):
+    import time
+    from harness.agents.base import Solver, new_state
+    from harness.agents.tools import LocalExecutor, ToolContext, ToolProfile
+    from harness.flags.submit import FlagSubmitter
+    from harness.inference.base import ModelResponse
+    from harness.inference.null import ScriptedModel
+    from harness.platforms.base import Platform, SubmitResult
+    from harness.scheduler.budget import Budget, Caps
+    from harness.telemetry.run_log import RunLog
+
+    class P(Platform):
+        def list_challenges(self): return []
+        def get_challenge(self, c): ...
+        def download_files(self, c, d): return []
+        def start_instance(self, c): ...
+        def get_conn_info(self, c): ...
+        def submit_flag(self, c, f): return SubmitResult(accepted=False)
+
+    seen = []
+
+    class Spy(ScriptedModel):
+        def complete(self, messages, tools=None):
+            seen.append(self.request_timeout)
+            return super().complete(messages, tools)
+
+    log = RunLog(str(tmp_path))
+    state = new_state("c", tmp_path, ToolContext("c", tmp_path, LocalExecutor()),
+                      system_prompt="s", task_prompt="t")
+    budget = Budget(Caps(total_seconds=100))
+    Solver(model=Spy([ModelResponse(text="done", stop_reason="stop")] * 4),
+           profile=ToolProfile("t", []), state=state, budget=budget, log=log,
+           submitter=FlagSubmitter(P(), log), max_iterations=2, plan_first=False).run()
+    log.close()
+    assert seen and all(t is not None and t <= 100 for t in seen)

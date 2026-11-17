@@ -145,7 +145,11 @@ class OpenAIModel(Model):
             kwargs["reasoning_effort"] = _EFFORT_STR.get(self.spec.effort, "low")
 
         try:
-            resp = client.chat.completions.create(**kwargs)
+            extra = {}
+            if self.request_timeout is not None:
+                extra["timeout"] = min(self.request_timeout,
+                                       float(os.environ.get("CTF_MODEL_TIMEOUT") or 300))
+            resp = client.chat.completions.create(**kwargs, **extra)
         except Exception as e:
             text = str(e).lower()
             # Parameter-shape rejections: remember per model and retry once. A new

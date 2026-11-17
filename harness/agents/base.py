@@ -47,12 +47,14 @@ RATE_LIMIT_DELAYS = (15.0, 30.0, 60.0, 60.0, 60.0, 60.0)
 # Consecutive turns with no tool call (and no accepted flag) before the attempt
 # counts as stalled. Each one gets a nudge to act first.
 MAX_PROSE_TURNS = 2
-# A model call that outlasts its time limit returns nothing and is not retried
-# as it was: in rehearsal 20 such calls cost about 6,000 s, and one pwn run lost
-# over half its time to 8 of them. The usual cause is the reply itself (a long
-# chain of reasoning at a 16K or 32K output cap), so the same request tends to
-# time out again. The model is told, the output cap comes down, and after this
-# many in a row the attempt ends as an error.
+# A model call that outlasts its time limit returns nothing. The logs of both
+# rehearsal rounds (11 full-length timeouts, all at an 8192 cap) say what these
+# are with GLM: the endpoint stops answering, and the same request sent again
+# answered in 6 of 7 episodes. So the first timeout is retried as it was, at
+# once. Only when that retry times out too is the reply itself the suspect (a
+# chain of reasoning too long to finish inside the limit): then the model is
+# told and the output cap is halved. After this many in a row the attempt ends
+# as an error.
 MAX_TIMEOUTS_IN_A_ROW = 3
 # Below this much time (after the reserve) no model request is started.
 MIN_MODEL_CALL_SECONDS = 5.0
@@ -366,23 +368,27 @@ class Solver:
             self.log.event("solver.output_cap_raised", challenge=self.state.challenge_id,
                            was=cur, now=new)
 
-    def _after_timeout(self, error: str) -> None:
-        """A model call timed out. Halve the output cap (not below
-        TIMEOUT_CAP_FLOOR, and never raising a cap that is already lower) so a
-        runaway reply ends inside the time limit next time, and tell the model
-        once. The caller decides when enough in a row is an error."""
+    def _after_timeout(self, error: str, in_a_row: int) -> None:
+        """A model call timed out. The first time, nothing changes: it is most
+        likely a stalled endpoint and the caller simply asks again. From the
+        second in a row, the request is the suspect: tell the model once, and
+        halve the output cap if it is above TIMEOUT_CAP_FLOOR, so a runaway
+        reply ends inside the limit. A cap that was not lowered leaves no
+        ceiling behind (a stall at the floor must not clamp the upper rungs or
+        the cut-off raise for the rest of the challenge)."""
         cid = self.state.challenge_id
-        cur = self.model.spec.max_tokens
-        new = max(TIMEOUT_CAP_FLOOR, cur // 2) if cur > TIMEOUT_CAP_FLOOR else cur
-        self.state.output_ceiling = new
-        self.state.output_floor = min(self.state.output_floor, new)
-        if new < cur:
-            self.model.spec = replace(self.model.spec, max_tokens=new)
+        cur = new = self.model.spec.max_tokens
+        if in_a_row >= 2:
+            if cur > TIMEOUT_CAP_FLOOR:
+                new = max(TIMEOUT_CAP_FLOOR, cur // 2)
+                self.model.spec = replace(self.model.spec, max_tokens=new)
+                self.state.output_ceiling = new
+                self.state.output_floor = min(self.state.output_floor, new)
+            last = self.state.messages[-1]
+            if not (last.role == "user" and last.content == _TIMEOUT_NOTE):
+                self.state.messages.append(Message(role="user", content=_TIMEOUT_NOTE))
         self.log.event("solver.model_timeout", challenge=cid, error=error[:200],
-                       output_cap_was=cur, output_cap_now=new)
-        last = self.state.messages[-1]
-        if not (last.role == "user" and last.content == _TIMEOUT_NOTE):
-            self.state.messages.append(Message(role="user", content=_TIMEOUT_NOTE))
+                       in_a_row=in_a_row, output_cap_was=cur, output_cap_now=new)
 
     def _save_output(self, data: bytes) -> str | None:
         """Keep an oversized tool output on disk so the model can search it."""
@@ -567,7 +573,7 @@ class Solver:
                 continue
             except ModelTimeout as e:
                 timeouts += 1
-                self._after_timeout(str(e))
+                self._after_timeout(str(e), timeouts)
                 if timeouts < MAX_TIMEOUTS_IN_A_ROW:
                     continue
                 self.state.note(f"model timed out {timeouts} times in a row")

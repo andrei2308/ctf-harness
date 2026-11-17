@@ -1,5 +1,9 @@
 # Last check before the freeze: instructions for Claude Code
 
+> **Completed 2026-11-17.** Results are in the addendum of `FINAL_REPORT.md`.
+> Its timeout hypothesis was wrong (the logs show endpoint stalls); the code
+> was corrected afterwards. Kept for reference.
+
 You are on Andrei's Kali machine, in the `ctf-harness` repo. `main` holds the
 work of `FINAL_REPORT.md`. Branch `contest-readiness` is one commit ahead of it,
 written after reviewing that report, without Docker and without a real model.

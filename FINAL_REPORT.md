@@ -327,3 +327,20 @@ the 15 s backoff cannot fit, by design.
   - rotate the CyberEDU session cookie (the last run is done);
   - time a 6 GB upload on the phone connection;
   - no Kali upgrade and no Docker prune before the contest.
+
+### After the addendum: the decision left open (Mythos, 17 November)
+
+The logs settled it: the timeouts were endpoint stalls, so the pre-freeze
+commit's reaction to a timeout was aimed at the wrong cause. Changed on
+`contest-readiness`:
+
+- **One timeout is retried as it was, at once.** No note to the model, no
+  change to the output cap. This is what recovered 6 of 7 episodes.
+- **From the second timeout in a row** the request is the suspect: the model
+  is told once, and a cap above 8192 is halved.
+- **A cap that was not lowered leaves no ceiling.** A stall at the 8192 floor
+  no longer clamps rungs 2 and 3 or the cut-off raise for the rest of the
+  challenge.
+
+283 tests pass on the host. Not yet rebuilt or run in the image.
+

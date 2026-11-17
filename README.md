@@ -6,7 +6,7 @@ per-category specialist, which works it through a tool loop behind a hard
 flag-grounding guard, streams flags the instant they verify, and logs everything
 for the between-run dev loop.
 
-It runs today, fully offline (**280 passing tests**, no network, no credentials),
+It runs today, fully offline (**283 passing tests**, no network, no credentials),
 behind two swappable interfaces (`Platform`, `Model`) so the remaining organizer
 unknowns don't block anything — you drop real values in as they land.
 
@@ -61,7 +61,7 @@ scripts/         convert_benchmark.py (CTFTiny/NYU/InterCode -> suite layout)
 Dockerfile       Kali-based submission image: harness + full CTF toolset
 BENCHMARKS.md    How to run/convert benchmarks and read the judge report
 fixtures/        Self-contained demo challenges for the offline rig
-tests/           pytest (280): grounding, budget, submit, solver, routing, tools, e2e, review regressions
+tests/           pytest (283): grounding, budget, submit, solver, routing, tools, e2e, review regressions
 ```
 
 > **Start with [HANDOFF.md](HANDOFF.md)**: what you must supply for a run to work,
@@ -71,7 +71,7 @@ tests/           pytest (280): grounding, budget, submit, solver, routing, tools
 > [CLAUDE_CODE_TASKS.md](CLAUDE_CODE_TASKS.md). Rehearsal on real challenges (done,
 > see [REHEARSAL_REPORT.md](REHEARSAL_REPORT.md)). Before the freeze:
 > [CLAUDE_CODE_FINAL.md](CLAUDE_CODE_FINAL.md) (done, see [FINAL_REPORT.md](FINAL_REPORT.md)),
-> then [CLAUDE_CODE_PREFREEZE.md](CLAUDE_CODE_PREFREEZE.md).
+> then [CLAUDE_CODE_PREFREEZE.md](CLAUDE_CODE_PREFREEZE.md) (done, see the addendum in the final report).
 
 ## Quickstart (offline, no network, no credentials)
 

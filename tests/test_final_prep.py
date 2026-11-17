@@ -500,28 +500,33 @@ def _timeout_model(pattern, spec):
     return spec_holder[0], caps
 
 
-def test_a_timed_out_call_is_not_retried_as_it_was(tmp_path, monkeypatch):
+def test_one_timeout_is_a_stall_and_changes_nothing(tmp_path, monkeypatch):
+    # The rehearsal logs: 11 full-length timeouts, all endpoint stalls; the same
+    # request answered when sent again. So: ask again at once, as it was.
     import harness.agents.base as base
     slept = []
     monkeypatch.setattr(base, "_sleep", slept.append)
-    model, caps = _timeout_model("TT", ModelSpec(name="m", max_tokens=32768))
+    model, caps = _timeout_model("T", ModelSpec(name="m", max_tokens=32768))
     solver, state = _solver(model, tmp_path)
     assert solver.run().outcome == Outcome.SOLVED
-    # the cap comes down each time, never below the floor, and nothing sleeps
-    assert [c for c, _ in caps] == [32768, 16384, 8192] and slept == []
+    assert [c for c, _ in caps] == [32768, 32768] and slept == []
+    assert state.output_ceiling == 0
+    assert not any("took too long" in m.content for m in state.messages)
+
+
+def test_a_second_timeout_in_a_row_changes_the_request(tmp_path):
+    model, caps = _timeout_model("TTT", ModelSpec(name="m", max_tokens=32768))
+    solver, state = _solver(model, tmp_path)
+    solver_out = solver.run()
+    assert solver_out.outcome == Outcome.ERROR and model.n == 3
+    # unchanged after the first, halved after the second (the third call saw it)
+    assert [c for c, _ in caps] == [32768, 32768, 16384]
     notes = [m.content for m in state.messages if m.role == "user" and "took too long" in m.content]
     assert len(notes) == 1                             # told once, not once per timeout
-    assert caps[1][1].startswith("Your last reply took too long")
-    assert state.output_ceiling == 8192
-    kinds = [json.loads(l)["kind"] for l in solver.log.path.read_text().splitlines()]
-    assert kinds.count("solver.model_timeout") == 2
-
-
-def test_three_timeouts_in_a_row_end_the_attempt_and_the_cap_carries_over(tmp_path):
-    model, caps = _timeout_model("TTTT", ModelSpec(name="m", max_tokens=16384))
-    solver, state = _solver(model, tmp_path)
-    out = solver.run()
-    assert out.outcome == Outcome.ERROR and model.n == 3
+    assert caps[2][1].startswith("Your last reply took too long")
+    assert state.output_ceiling == 8192                # halved again by the third
+    events = [json.loads(l) for l in solver.log.path.read_text().splitlines()]
+    assert [e["in_a_row"] for e in events if e["kind"] == "solver.model_timeout"] == [1, 2, 3]
     # the next rung asks for 32768; it starts at the learned ceiling instead
     nxt = _Fn(lambda n, m, t: _say(n, f"found {REAL}"), ModelSpec(name="m", max_tokens=32768))
     Solver(model=nxt, profile=ToolProfile("t", [_Out()]), state=state, budget=Budget(Caps()),
@@ -529,18 +534,25 @@ def test_three_timeouts_in_a_row_end_the_attempt_and_the_cap_carries_over(tmp_pa
     assert nxt.spec.max_tokens == 8192
 
 
-def test_a_timeout_never_raises_a_low_cap_and_bounds_the_cut_off_raise(tmp_path):
+def test_timeouts_at_the_floor_leave_no_ceiling_behind(tmp_path):
+    # Every stall in rehearsal happened at an 8192 cap. That must not clamp the
+    # upper rungs or the cut-off raise for the rest of the challenge.
     from harness.inference.base import ModelTimeout
     def fn(n, messages, tools):
-        if n == 1:
+        if n <= 2:
             raise ModelTimeout("Request timed out.")
-        if n == 2:
+        if n == 3:
             return ModelResponse(text="", stop_reason="length")
         return _say(n, f"found {REAL}")
-    model = _Fn(fn, ModelSpec(name="m", max_tokens=4096))
+    model = _Fn(fn, ModelSpec(name="m", max_tokens=8192))
     solver, state = _solver(model, tmp_path)
     assert solver.run().outcome == Outcome.SOLVED
-    assert state.output_ceiling == 4096 and model.spec.max_tokens == 4096   # no doubling past it
+    assert state.output_ceiling == 0
+    assert model.spec.max_tokens == 16384              # the cut-off raise still works
+    nxt = _Fn(lambda n, m, t: _say(n, "x"), ModelSpec(name="m", max_tokens=32768))
+    Solver(model=nxt, profile=ToolProfile("t", [_Out()]), state=state, budget=Budget(Caps()),
+           log=solver.log, submitter=solver.submitter, plan_first=False, limits=Limits())
+    assert nxt.spec.max_tokens == 32768
 
 
 def test_adapters_name_a_timeout(monkeypatch):

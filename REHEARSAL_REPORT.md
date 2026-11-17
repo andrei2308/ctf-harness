@@ -1,8 +1,8 @@
 # Rehearsal report: real CyberEDU challenges
 
 Rehearsal run per `CLAUDE_CODE_REHEARSAL.md`, 2026-11-16 and 2026-11-17,
-on branch `contest-readiness`. The day-by-day interim notes are in
-`REHEARSAL_PROGRESS.md`.
+on branch `contest-readiness`. The final round that followed is in
+`FINAL_REPORT.md`.
 
 **Verdict: 6 of 13 eligible challenges were solved on the first attempt; 9 of
 13 after the fixes.** All the re-run gains came from harness fixes, not

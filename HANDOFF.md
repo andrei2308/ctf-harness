@@ -234,9 +234,12 @@ entry) and is read from there at run time.
 | Small context window | `CTF_HISTORY_SOFT_CHARS`, `CTF_HISTORY_HARD_CHARS` | Defaults (40K / 160K chars) assume roughly 64K tokens or more |
 | Flag format | `CTF_FLAG_REGEX` | Default handles `CTF{..}` and prefixed forms like `DCTF{..}` only |
 | A wrong-flag penalty | `CTF_PENALIZE_WRONG=1` | Turns off ungrounded and repeat submissions |
+| Free wrong flags (the expected case) | `CTF_MAX_GUESSES` (default 8) | Ungrounded guesses per challenge; one challenge sent 22 before the cap |
 | A challenge is a whole machine, not one port | `CTF_TARGET_SCOPE=host` | The default refuses other ports on the target host, which is right only on shared infrastructure |
 | The model cannot see images (preflight check 7) | `CTF_VISION=0` | Drops `view_image` from the tool list |
-| A time limit well above or below 20 minutes | `CTF_LADDER_DEPTHS` | Turns per rung (default 12, 25, 40, 60); at 15 to 30 s a turn, 20 minutes is about 50 turns |
+| A time limit well above or below 20 minutes | `CTF_LADDER_DEPTHS` | Turns per rung (default 12, 25, 40, 60); GLM's median turn was 9 s (p90 46 s), and 20 minutes was 40 to 70 turns. Depth never bound in testing; time did |
+| A model much slower or faster than GLM 5.3 Flash | `CTF_MODEL_TIMEOUT` (shipped: 180) | Set from 1,556 GLM turns (p99 132 s); recheck with the contest model's preflight timings |
+| A very short time limit | `CTF_OPENAI_SEND_EFFORT=1`, if the model honours it | Faster turns but erratic: 3 of 4 runs fast, 1 collapsed. Off by default |
 | Cached input is free | raise `CTF_HISTORY_SOFT_CHARS` | Trimming old results breaks the cache prefix |
 
 Put the final values in `contest.env`; commented examples for each are already
@@ -291,19 +294,24 @@ Two things to know:
   message looks like progress. Repeated identical commands are caught.
 - **`HttpTool` keeps no cookies** between calls. The agent can use `curl` with a
   cookie jar from `shell`.
-- **Prompts and ladder depths** have met one real model (GLM 5.3 Flash) on 13
-  real CyberEDU challenges (9 solved). Ladder depth never bound; the 1200 s
-  time limit did. Clean-context restarts never triggered, so they are
-  untested in practice.
+- **Prompts and ladder depths** have met one real model (GLM 5.3 Flash) on
+  real CyberEDU challenges in two batches (`REHEARSAL_REPORT.md`,
+  `FINAL_REPORT.md`). Ladder depth never bound; the time limit did. Restarts
+  were forced on the offline suite: the handover notes carry the established
+  facts with exact values and the next attempt builds on them; images do not
+  survive a restart. A clean context at every rung change
+  (`CTF_FRESH_CONTEXT=1`) nearly doubled wall time and stays off.
 - **Rung 0's 4096 output tokens is small for a reasoning model.** Set
   `CTF_MIN_OUTPUT_TOKENS` to raise every rung's floor. Without it the solver
   still recovers: a turn cut off with nothing produced doubles the cap for the
   rest of the challenge, at the cost of that one wasted turn. Preflight check 6
   reports whether the model reasons and whether it gets cut off.
-- **CyberEDU contest mode is unverified.** The adapter's practice-catalogue
-  mode is checked live; its contest mode (`CTF_CONTEST_ID` = slug) is written
-  from the server source and has not met a live contest. The server cannot
-  stop an instance; instances end after CyberEDU's 60 minutes.
+- **CyberEDU contest mode is checked read-only.** `adapter_check` on DefCamp
+  CTF 2025 Quals listed 26 challenges, downloaded a file and showed the
+  question; the slug is the last part of the contest's `url`
+  (`/competition/dctf25-quals`). Starting a contest service and submitting
+  were not exercised. The server cannot stop an instance; instances end after
+  CyberEDU's 60 minutes.
 - **Toy flags ship in the image** (`/opt/ctf-harness/tests`, `fixtures`). They
   are now collected at start-up and never submitted (`harness/flags/decoys.py`),
   except with the fixtures rig, where they are the answers. Flags in your notes
@@ -321,19 +329,22 @@ Two things to know:
   boundaries held. A separate user for the agent's shell would close it.
 - **gdb cannot disable ASLR** under Docker's default seccomp profile
   (`personality` is blocked); addresses differ from run to run under gdb.
-- **Tools the rehearsal wanted** (PHP, an ssh client with `sshpass`, plus
-  telnet, ftp, smbclient, database clients, node, 32-bit libraries, the `mcp`
-  client and CyberEDU's server) are in `scripts/image_extras.sh`. They are in
-  the image only once `Dockerfile.tools` has been built and `:base` re-tagged;
-  `scripts/check_image.py` lists each one. Wine is left out (large, and one
-  challenge wanted it).
+- **Tools the rehearsal wanted** (PHP, an ssh client with `sshpass`, telnet,
+  ftp, smbclient, database clients, node, 32-bit libraries, ping/ip/ss,
+  matplotlib/scipy, the `mcp` client and CyberEDU's server) are in the
+  current `:base` (built 2026-11-17 from `Dockerfile.tools`; the previous base
+  is kept as `ctf-harness:base-1115` and `~/ctf-harness-base-1115.tar.gz`).
+  nmap's file capabilities are stripped so it runs when a sandbox drops
+  NET_RAW. `check_image.py` passes 74/74 as root, read-only, as uid 1000 and
+  with NET_RAW dropped. Wine is left out.
 - **The scope guard is a guard, not a firewall.** With the default
   `CTF_TARGET_SCOPE=service` it refuses scanners and other ports on the target
   host, and a script that builds an address at run time gets past it. The
   contest sandbox's own isolation is the real boundary there.
-- **The contest configuration (`CTF_PENALIZE_WRONG=0`) has not run on real
-  challenges.** All 23 rehearsal runs used the penalty setting to keep junk off
-  the CyberEDU account. `CLAUDE_CODE_FINAL.md` has it run on an offline suite.
+- **The contest configuration (`CTF_PENALIZE_WRONG=0`) has run on the
+  offline suite only** (5 of 6 solved), not on CyberEDU, to keep junk off the
+  account. It led to two fixes: a lettered prefix is tried first, and
+  ungrounded guesses are capped (`CTF_MAX_GUESSES`).
 - **Unpinned downloads:** RsaCtfTool, jwt_tool and the Foundry installer
   follow upstream HEAD. The base image is pinned by digest; bump it
   deliberately, never on contest day (a new base invalidates every cached

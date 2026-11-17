@@ -342,5 +342,16 @@ commit's reaction to a timeout was aimed at the wrong cause. Changed on
   no longer clamps rungs 2 and 3 or the cut-off raise for the rest of the
   challenge.
 
-283 tests pass on the host. Not yet rebuilt or run in the image.
+Verified the same evening (Claude Code):
+
+- **Tests and image:** 283 pass on the host and in the rebuilt image;
+  `check_image` 74/74.
+- **Hanging endpoint** (`CTF_TOTAL_SECONDS=120`, `CTF_MODEL_TIMEOUT=10`):
+  - each attempt went T1 (retried unchanged), T2, T3, then ended as an
+    error; after three such attempts the ladder moved up a rung;
+  - the run stopped at 100 s, on reaching the reserve, with no requests
+    inside it;
+  - the cap (4096) was never lowered, as it was at or below 8192.
+- **Real model (GLM):** wifi-get-me solved in 32 s and encryptor in 70 s,
+  1 submission each, no wrong ones.
 

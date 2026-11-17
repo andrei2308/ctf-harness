@@ -364,6 +364,10 @@ _CATEGORY_RULES: list[tuple[tuple[str, ...], Specialist]] = [
     (("pyjail", "jail"), _PYJAIL),
     (("web", "http"), _WEB),
     (("mobile", "android", "apk", "ios"), _MOBILE),
+    # Last: an explicit misc label wins over the 'has a port -> pwn' guess
+    # (fair-dice, "Misc, Programming" with a dice-game service, went to pwn).
+    # profile_for() still adds connect/send/recv for the service.
+    (("misc", "programming", "ppc", "trivia"), _GENERALIST),
 ]
 
 

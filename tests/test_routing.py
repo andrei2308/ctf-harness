@@ -91,3 +91,13 @@ def test_keywords_match_at_a_word_start_only():
                  None).profile().name == "rev"
     assert route(Challenge(id="c", name="x", category="Steganography"),
                  None).profile().name == "forensics"
+
+
+def test_a_misc_service_goes_to_the_generalist_with_service_tools():
+    from harness.platforms.base import ConnInfo
+    conn = ConnInfo(host="10.0.0.1", port=31499)
+    spec = route(Challenge(id="c", name="fair-dice", category="Misc, Programming"), conn)
+    assert spec.profile().name == "generalist"
+    assert {"connect", "send", "recv"} <= {t.name for t in spec.profile_for(conn).tools}
+    # a category-less service still falls back to pwn by its port
+    assert route(Challenge(id="c", name="x"), conn).profile().name == "pwn"

@@ -60,6 +60,7 @@ def flag_pattern() -> re.Pattern[bytes]:
 
 # "sum" too: DefCamp CTF 2025 states its format as ctf{sha256sum}.
 _HASH_HINT = re.compile(r"[A-Za-z0-9_]*\{\s*(sha-?256|sha-?1|md5)(?:sum)?\b", re.IGNORECASE)
+_LEN_HINT = re.compile(r"\{\s*\.\{(\d{1,3})\}\s*\}")
 _HASH_HEX = {"sha256": 64, "sha-256": 64, "sha1": 40, "sha-1": 40, "md5": 32}
 
 
@@ -72,9 +73,14 @@ def format_check(text: str):
     grounded, so it went out as a wrong submission. Only hash formats are
     understood; anything else imposes no check."""
     lengths = {_HASH_HEX[m.group(1).lower()] for m in _HASH_HINT.finditer(text or "")}
-    if not lengths:
-        return None
     pats = [re.compile(rf"[0-9a-fA-F]{{{n}}}") for n in sorted(lengths)]
+    # A length stated as a regex, "CTF{.{27}}" (luma-lacks-love): any body of
+    # exactly that many characters.
+    sized = sorted({int(m.group(1)) for m in _LEN_HINT.finditer(text or "")})
+    pats += [re.compile(rf"[^{{}}]{{{n}}}", re.S) for n in sized]
+    lengths |= set(sized)
+    if not pats:
+        return None
 
     def check(flag: str) -> bool:
         i, j = flag.find("{"), flag.rfind("}")
@@ -82,6 +88,19 @@ def format_check(text: str):
         return any(p.fullmatch(body) for p in pats)
     check.lengths = sorted(lengths)          # for the log
     return check
+
+
+_BYTE_ESCAPE = re.compile(rb"\\x[0-9a-fA-F]{2}")
+
+
+def _junk_body(raw: bytes) -> bool:
+    """A flag-shaped match that cannot be a flag: an empty or whitespace-only
+    body (a placeholder such as "CTF{" + 27 spaces + "}"), or one holding
+    printed byte escapes (a Python bytes repr of garbage, "CTF{\\x98\\xb8..}").
+    Both went out as wrong submissions on luma-lacks-love."""
+    i, j = raw.find(b"{"), raw.rfind(b"}")
+    body = raw[i + 1:j] if 0 <= i < j else b""
+    return not body.strip() or bool(_BYTE_ESCAPE.search(body))
 
 
 def candidates(pattern: re.Pattern[bytes], data: bytes) -> list[bytes]:
@@ -104,7 +123,7 @@ def candidates(pattern: re.Pattern[bytes], data: bytes) -> list[bytes]:
         else:
             found = [m.group(0)]
         for raw in found:
-            if raw not in out:
+            if raw not in out and not _junk_body(raw):
                 out.append(raw)
     return out
 

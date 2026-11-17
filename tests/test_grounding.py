@@ -106,3 +106,17 @@ def test_a_letters_prefix_is_tried_first_and_digits_padding_last(monkeypatch):
     assert got == ["DCTF{abc}", "CTF{abc}"]
     got = [g.flag for g in EvidenceStore(pattern=flag_pattern()).record("t", b"00de3CTF{abc}")]
     assert got[0] == "CTF{abc}"
+
+
+def test_junk_bodies_are_never_candidates():
+    # luma-lacks-love: a whitespace placeholder and a bytes repr went out.
+    from harness.flags.grounding import EvidenceStore, flag_pattern
+    s = EvidenceStore(pattern=flag_pattern())
+    got = [g.flag for g in s.record("t", b"CTF{" + b" " * 27 + b"} b'CTF{\\x98\\xb8\\x01}' CTF{4dm1t_real}")]
+    assert got == ["CTF{4dm1t_real}"]
+
+
+def test_a_stated_length_regex_is_enforced():
+    from harness.flags.grounding import format_check
+    chk = format_check("1. What is the flag? (format: CTF{.{27}} (a regex for the length))")
+    assert chk("CTF{" + "a" * 27 + "}") and not chk("CTF{this_is_a_decoy}")

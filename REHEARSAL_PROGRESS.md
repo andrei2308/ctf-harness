@@ -1,5 +1,8 @@
 # Rehearsal progress (interim)
 
+> **Superseded by `REHEARSAL_REPORT.md`** (final, 2026-11-17). Some commit
+> hashes below predate a history rewrite; the report's are current.
+
 Status of the `CLAUDE_CODE_REHEARSAL.md` work at the end of 2026-11-16. The
 rehearsal is **paused** and continues on 2026-11-17. The final write-up will be
 `REHEARSAL_REPORT.md`. This file records what was done so far, every change

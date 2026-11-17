@@ -374,10 +374,19 @@ class CyberEduMcpPlatform(Platform):
 
     @staticmethod
     def _to_challenge(it: dict, questions: list[dict] | None = None) -> Challenge:
-        tags = [t.get("name", "") for t in it.get("tags") or [] if isinstance(t, dict)]
-        category = ", ".join(t for t in tags if t)
+        all_tags = [t for t in it.get("tags") or [] if isinstance(t, dict) and t.get("name")]
+        # Only 'default' tags are categories (Web, Pwn, Network, ...). The rest
+        # are the event ('collection') and skill tags ('cwe', 'mittre', 'wstg'):
+        # good hints, bad routing keys (fair-dice's CWE "...from Previous
+        # Values" contains "rev" and went to the rev specialist).
+        cats = [t["name"] for t in all_tags if t.get("type", "default") == "default"]
+        hints = [t["name"] for t in all_tags if t.get("type", "default") != "default"]
+        tags = cats or [t["name"] for t in all_tags]
+        category = ", ".join(tags)
         flags = it.get("flags")
         description = str(it.get("description") or "")
+        if hints:
+            description += "\n\nTags: " + "; ".join(hints)
         if questions and any(q.get("question") or q.get("description") for q in questions):
             description += "\n\n" + _questions_text(questions)
         return Challenge(
@@ -399,7 +408,8 @@ class CyberEduMcpPlatform(Platform):
             return ConnInfo()
         url = None
         if _kind_from_tags([t.get("name", "") for t in detail.get("tags") or []
-                            if isinstance(t, dict)]) == ChallengeKind.WEB:
+                            if isinstance(t, dict) and t.get("type", "default") == "default"]
+                           ) == ChallengeKind.WEB:
             url = f"http://{address}"
         expires = (status.get("terminate_at") or {}).get("timestamp")
         return ConnInfo(host=host, port=_int(port), url=url,

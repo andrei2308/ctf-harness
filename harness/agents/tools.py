@@ -321,8 +321,9 @@ class ServiceConnectTool(Tool):
     and port come from ConnInfo only — any other address is refused."""
 
     name = "connect"
-    description = ("Open a TCP connection to the challenge service (the platform-"
-                   "provided target). Reuses an existing connection if open.")
+    description = ("Open a NEW TCP connection to the challenge service (the "
+                   "platform-provided target), closing any previous one, and return "
+                   "whatever it sends first. Call it again to start over.")
 
     def input_schema(self) -> dict:
         return {"type": "object", "properties": {
@@ -332,17 +333,25 @@ class ServiceConnectTool(Tool):
         if not ctx.conn or not ctx.conn.host or not ctx.conn.port:
             return ToolResult(self.name, b"", "connect:none",
                               error="no target host/port for this challenge")
-        sess = ctx.sessions.get("svc")
-        if sess is not None and not getattr(sess, "_closed", True):
-            return ToolResult(self.name, b"", "connect:reuse",
-                              meta={"host": ctx.conn.host, "port": ctx.conn.port})
+        # Always a fresh connection. Reusing one hid a dead socket in rehearsal
+        # (fair-dice): the server closed it, every later send hit "Broken pipe",
+        # and connect kept "reusing" it, silently, for four minutes.
+        old = ctx.sessions.pop("svc", None)
+        if old is not None:
+            old.close()
         timeout = ctx.clamp(args.get("timeout"))
         try:
             sock = socket.create_connection((ctx.conn.host, ctx.conn.port), timeout=timeout)
         except OSError as e:
             return ToolResult(self.name, b"", "connect:fail", error=str(e))
-        ctx.sessions["svc"] = _SocketSession(sock)
-        return ToolResult(self.name, b"", "connect:ok",
+        sess = _SocketSession(sock)
+        ctx.sessions["svc"] = sess
+        try:
+            banner = sess.recv(timeout=2.0)
+        except OSError:
+            banner = b""
+        note = f"[connected to {ctx.conn.host}:{ctx.conn.port} (new connection)]\n".encode()
+        return ToolResult(self.name, note + banner, "svc:recv",
                           meta={"host": ctx.conn.host, "port": ctx.conn.port})
 
 
@@ -370,8 +379,9 @@ class ServiceSendTool(Tool):
             sess.send(payload)
             reply = sess.recv(timeout=timeout)
         except OSError as e:
-            return ToolResult(self.name, b"", "send:fail", error=str(e))
-        return ToolResult(self.name, reply, "svc:recv")
+            return ToolResult(self.name, b"", "send:fail",
+                              error=f"{e}; the connection is closed, call connect to start over")
+        return ToolResult(self.name, reply + _closed_note(sess), "svc:recv")
 
 
 class ServiceRecvTool(Tool):
@@ -389,8 +399,9 @@ class ServiceRecvTool(Tool):
         try:
             data = sess.recv(timeout=timeout)
         except OSError as e:
-            return ToolResult(self.name, b"", "recv:fail", error=str(e))
-        return ToolResult(self.name, data, "svc:recv")
+            return ToolResult(self.name, b"", "recv:fail",
+                              error=f"{e}; the connection is closed, call connect to start over")
+        return ToolResult(self.name, data + _closed_note(sess), "svc:recv")
 
 
 class HttpTool(Tool):
@@ -472,7 +483,11 @@ class _SocketSession:
         self._closed = False
 
     def send(self, data: bytes) -> None:
-        self._sock.sendall(data)
+        try:
+            self._sock.sendall(data)
+        except OSError:
+            self.close()        # a broken pipe stays broken: never reuse it
+            raise
 
     def recv(self, timeout: float = 5.0, bufsize: int = 65536) -> bytes:
         self._sock.settimeout(timeout)
@@ -488,6 +503,9 @@ class _SocketSession:
                     break
         except socket.timeout:
             pass
+        except OSError:
+            self.close()
+            raise
         return b"".join(chunks)
 
     def close(self) -> None:
@@ -496,6 +514,13 @@ class _SocketSession:
             self._sock.close()
         except OSError:
             pass
+
+
+def _closed_note(sess: "_SocketSession") -> bytes:
+    """Say it when the service hung up. A silent empty reply looked like a slow
+    server to the agent (fair-dice), which then kept talking to a dead socket."""
+    return (b"\n[connection closed by the service; call connect to start over]"
+            if getattr(sess, "_closed", False) else b"")
 
 
 def _unescape(s: str) -> bytes:

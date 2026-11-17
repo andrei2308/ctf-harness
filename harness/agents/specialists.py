@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import abc
 import os
+import re
 from pathlib import Path
 
 from ..platforms.base import Challenge, ChallengeKind, ConnInfo
@@ -370,7 +371,8 @@ def route(challenge: Challenge, conn: ConnInfo | None) -> Specialist:
     """Pick a specialist by category keyword, then by kind/connection shape."""
     cat = (challenge.category or "").lower()
     for keys, spec in _CATEGORY_RULES:
-        if any(k in cat for k in keys):
+        # At a word start: "rev" must match "reverse", not "previous".
+        if any(re.search(r"(?<![a-z0-9])" + re.escape(k), cat) for k in keys):
             return spec
     # No category match: use the connection/kind signal.
     if conn and conn.url:

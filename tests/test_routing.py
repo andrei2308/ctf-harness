@@ -80,3 +80,14 @@ def test_a_live_target_brings_its_tools_whatever_the_specialist():
     assert "connect" not in names(spec.profile_for(None))
     assert {"connect", "send", "recv"} <= names(spec.profile_for(ConnInfo(host="h", port=1)))
     assert "http" in names(spec.profile_for(ConnInfo(url="http://h:1")))
+
+
+def test_keywords_match_at_a_word_start_only():
+    # fair-dice (rehearsal): a CWE tag "...from Previous Values" contains "rev".
+    assert route(Challenge(id="c", name="x", category="Misc, Programming, "
+                           "Predictable Exact Value from Previous Values"), None
+                 ).profile().name != "rev"
+    assert route(Challenge(id="c", name="x", category="Reverse Engineering"),
+                 None).profile().name == "rev"
+    assert route(Challenge(id="c", name="x", category="Steganography"),
+                 None).profile().name == "forensics"

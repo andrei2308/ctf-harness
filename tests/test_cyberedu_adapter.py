@@ -300,3 +300,14 @@ def test_get_flag_is_still_refused_for_any_other_use():
     p, _ = _plat({})
     with pytest.raises(PlatformError, match="refusing"):
         p._call("cyberedu_get_flag", {"challenge_id": CID, "flag_id": "4744"})
+
+
+def test_only_default_tags_are_the_category_the_rest_are_hints():
+    tagged = {**DETAIL, "tags": [
+        {"name": "Misc", "type": "default"}, {"name": "Programming", "type": "default"},
+        {"name": "D-CTF 2019 - Final Phase", "type": "collection"},
+        {"name": "Predictable Exact Value from Previous Values - (342)", "type": "cwe"}]}
+    p, _ = _plat({"cyberedu_get_challenge": tagged})
+    c = p.get_challenge(CID)
+    assert c.category == "Misc, Programming"
+    assert "Tags: D-CTF 2019 - Final Phase; Predictable Exact Value" in c.description

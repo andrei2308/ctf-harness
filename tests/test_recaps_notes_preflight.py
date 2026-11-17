@@ -164,6 +164,8 @@ def test_restart_starts_from_the_handover_note(tmp_path):
 # --- preflight ---------------------------------------------------------------
 
 def _good(n, messages, tools):
+    if messages[-1].images:
+        return ModelResponse(text="Red.", usage=Usage(30, 2), spec=SPEC)
     if tools and not any(m.role == "tool" for m in messages):
         return ModelResponse(tool_calls=(ToolCall("t1", "shell", {"cmd": "echo preflight"}),),
                              usage=Usage(20, 5), spec=SPEC)
@@ -175,6 +177,7 @@ def test_preflight_passes_on_a_working_endpoint():
     assert all(ok for _, ok, _ in res), res
     assert [n[0] for n, _, _ in res][:4] == ["1", "2", "3", "4"]
     assert sum(n.startswith("5.") for n, _, _ in res) == 4      # one per distinct rung
+    assert [d for n, ok, d in res if n.startswith("7.")][0].startswith("read the image")
 
 
 def test_preflight_names_the_fix_when_a_rung_is_rejected():

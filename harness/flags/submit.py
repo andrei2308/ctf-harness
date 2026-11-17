@@ -22,6 +22,7 @@ per flag, no speculative resubmits.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -67,7 +68,7 @@ class FlagSubmitter:
     def __init__(self, platform: Platform, log: RunLog, *, dry_run: bool = False,
                  penalize_wrong: bool = False, max_submits_per_flag: int = 3,
                  retry_delays: tuple[float, ...] = SUBMIT_RETRY_DELAYS,
-                 sleep=time.sleep):
+                 sleep=time.sleep, min_interval: float | None = None):
         self._platform = platform
         self._log = log
         self._dry_run = dry_run
@@ -82,7 +83,24 @@ class FlagSubmitter:
         self._pending_rounds: dict[tuple[str, str], int] = {}
         self._next_try: dict[tuple[str, str], float] = {}
         self._clock = time.monotonic
+        # Seconds between two calls to the grader. Three candidates sent within
+        # a second drew HTTP 429 in rehearsal, and with wrong flags free the
+        # contest configuration sends more candidates, not fewer.
+        if min_interval is None:
+            try:
+                min_interval = float(os.environ.get("CTF_SUBMIT_MIN_INTERVAL", "1.0"))
+            except ValueError:
+                min_interval = 1.0
+        self._min_interval = max(0.0, min_interval)
+        self._last_call = float("-inf")
         self.records: list[SubmissionRecord] = []
+
+    def _pace(self) -> None:
+        with self._lock:
+            wait = self._last_call + self._min_interval - self._clock()
+            self._last_call = self._clock() + max(0.0, wait)
+        if wait > 0:
+            self._sleep(wait)
 
     @property
     def allow_ungrounded(self) -> bool:
@@ -155,6 +173,7 @@ class FlagSubmitter:
             result = None
             for i in range(len(self._retry_delays) + 1):
                 try:
+                    self._pace()
                     result = self._platform.submit_flag(challenge, flag)
                     break
                 except Exception as e:  # noqa: BLE001 - any adapter failure is retryable here

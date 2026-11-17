@@ -247,7 +247,32 @@ class Tool(abc.ABC):
 # --------------------------------------------------------------------------- #
 
 _SCANNERS = re.compile(r"\b(nmap|masscan|rustscan|zmap|unicornscan|naabu)\b")
-_NC_SCAN = re.compile(r"\b(nc|ncat|netcat)\b[^|;&\n]*\s-[a-zA-Z]*z")
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def target_scope() -> str:
+    """How much of the target the agent may touch (CTF_TARGET_SCOPE):
+
+      service  only the host:port the platform gave (default; right on shared
+               infrastructure, where other ports are other people's instances)
+      host     every port on the target host (the challenge is a whole machine)
+      any      no guard and no scope line in the prompt
+
+    A target given without a port is treated as `host`."""
+    v = os.environ.get("CTF_TARGET_SCOPE", "service").strip().lower()
+    return v if v in ("service", "host", "any") else "service"
+
+
+def _target(conn: "ConnInfo | None") -> tuple[str | None, int | None]:
+    if conn is None:
+        return None, None
+    host, port = conn.host, conn.port
+    if conn.url:
+        from urllib.parse import urlsplit
+        u = urlsplit(conn.url)
+        host = host or u.hostname
+        port = port or u.port or (443 if u.scheme == "https" else 80)
+    return host, port
 
 
 def scope_violation(cmd: str, conn: "ConnInfo | None") -> str | None:
@@ -258,22 +283,50 @@ def scope_violation(cmd: str, conn: "ConnInfo | None") -> str | None:
     instances: in rehearsal the agent port-scanned the node and opened them.
     This catches scanners pointed at the target host and the target host named
     with another port. It is a guard, not a firewall: a script that builds the
-    address at run time gets past it."""
-    if conn is None:
+    address at run time gets past it.
+
+    It must not refuse ordinary commands, so a number after the host counts as
+    a port only when it cannot be something else: `host 2>/dev/null` and
+    `host 2>&1` are redirections, not ports."""
+    host, port = _target(conn)
+    if not host or not port or target_scope() != "service" or host not in cmd:
         return None
-    host, port = conn.host, conn.port
-    if conn.url:
-        from urllib.parse import urlsplit
-        u = urlsplit(conn.url)
-        host = host or u.hostname
-        port = port or u.port or (443 if u.scheme == "https" else 80)
-    if not host or host not in cmd:
+    h = r"(?<![\w.-])" + re.escape(host)
+    named = [int(m.group(1)) for m in re.finditer(
+        h + r"""['"]?(?::|\s*,\s*|[ \t]+)['"]?(\d{1,5})\b(?![.\w>&<])""", cmd)]
+    for p in named:
+        if p != int(port):
+            return f"{host}:{p} is not this challenge's service (that is port {port})"
+    if _SCANNERS.search(cmd):
+        # A scanner aimed at exactly the service's port is a fingerprint, not a scan.
+        ports = re.findall(r"(?<!\S)-p\s*(\S+)", cmd)
+        if not (ports and all(p == str(port) for p in ports)):
+            return f"port scanning {host} is out of scope (only port {port} is yours)"
+    return None
+
+
+def harness_violation(cmd: str, work_dir: Path) -> str | None:
+    """Why `cmd` is aimed at the harness's own files, or None.
+
+    A stuck agent turns on its environment: in rehearsal it read the fixture
+    answers, its own run log and the harness source, and once spent 18 minutes
+    there. Nothing in the harness tree says anything about a challenge. The
+    knowledge base and the work dir are the two places inside it the agent is
+    meant to use. CTF_GUARD_HARNESS=0 turns this off."""
+    if os.environ.get("CTF_GUARD_HARNESS", "1").strip() == "0":
         return None
-    if _SCANNERS.search(cmd) or _NC_SCAN.search(cmd):
-        return f"port scanning {host} is out of scope"
-    for m in re.finditer(re.escape(host) + r"""['"]?\s*[:,\s]\s*['"]?(\d{1,5})\b""", cmd):
-        if port and int(m.group(1)) != int(port):
-            return f"{host}:{m.group(1)} is not this challenge's service"
+    root = str(_REPO_ROOT)
+    if len(root) < 4 or root not in cmd:
+        return None
+    allowed = [str(_REPO_ROOT / "knowledge"), str(Path(work_dir).resolve())]
+    extra = os.environ.get("CTF_KNOWLEDGE_DIR", "").strip()
+    if extra:
+        allowed.append(str(Path(extra).resolve()))
+    for m in re.finditer(r"(?<![\w.-])" + re.escape(root) + r"(?![\w.-])(/[^\s'\";|&)<>]*)?", cmd):
+        path = (root + (m.group(1) or "")).rstrip("/")
+        if not any(path == a or path.startswith(a + "/") for a in allowed):
+            return ("that is the runner's own code and logs, which hold nothing about "
+                    "this challenge")
     return None
 
 
@@ -306,6 +359,10 @@ class ShellTool(Tool):
             return ToolResult(self.name, b"", "shell:out-of-scope", error=(
                 f"refused: {why}. Your only target is the service given in the task; "
                 "other ports and hosts belong to other people."))
+        why = harness_violation(cmd, ctx.work_dir)
+        if why:
+            return ToolResult(self.name, b"", "shell:harness", error=(
+                f"refused: {why}. Work on the challenge's files and service instead."))
         timeout = ctx.clamp(args.get("timeout"))
         out, code = ctx.executor.run(cmd, ctx.work_dir, timeout)
         truncated = len(out) > MAX_TOOL_OUTPUT

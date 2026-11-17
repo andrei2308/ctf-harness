@@ -143,8 +143,42 @@ def run(config: Config, model_factory=None) -> list[tuple[str, bool, str]]:
             "set CTF_MIN_OUTPUT_TOKENS=8192 or higher; the solver also doubles the "
             "cap after a cut-off turn, but each one wastes a full turn of tokens")
 
+    def sees_images():
+        # A 64x64 solid red square. An adapter that learns the model rejects
+        # images falls back to text and remembers it; that is the signal here.
+        r = base.complete([sys_msg, Message(
+            "user", "What colour is the square in the image? Answer with one word.",
+            images=(_red_square(),))], None)
+        blind = base.spec.name in getattr(type(base), "_no_vision_models", ())
+        answer = (r.text or "").strip()[:40]
+        if blind:
+            raise ModelError("the model rejected image input")
+        if "red" not in answer.lower():
+            raise ModelError(f"took the image but answered {answer!r}, not 'red'")
+        return f"read the image: {answer!r}"
+
+    attempt("7. the model can look at images (view_image)", sees_images,
+            "not fatal: view_image falls back to text. Set CTF_VISION=0 to drop the "
+            "tool, and expect handwriting, QR-in-photo and stereogram tasks to go slowly")
+
     base.close()
     return results
+
+
+def _red_square(side: int = 64) -> str:
+    """A solid red PNG as a data: URL, built without Pillow."""
+    import base64
+    import struct
+    import zlib
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        body = kind + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+
+    raw = (b"\x00" + b"\xff\x00\x00" * side) * side
+    png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", side, side, 8, 2, 0, 0, 0))
+           + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+    return "data:image/png;base64," + base64.b64encode(png).decode()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -160,8 +194,9 @@ def main(argv: list[str] | None = None) -> int:
     results = run(config)
     for name, ok, detail in results:
         print(f"  [{'PASS' if ok else 'FAIL'}] {name}\n         {detail}")
-    # Usage reporting is a warning; everything else must pass for a run to work.
-    blocking = [r for r in results if not r[1] and not r[0].startswith("2.")]
+    # Usage reporting and vision are warnings; everything else must pass for a
+    # run to work.
+    blocking = [r for r in results if not r[1] and not r[0].startswith(("2.", "7."))]
     print("\n" + ("Ready: a run can start." if not blocking
                   else f"NOT ready: {len(blocking)} check(s) failed."))
     return 1 if blocking else 0

@@ -83,6 +83,8 @@ class SolverState:
     notes: list[str] = field(default_factory=list)
     planned: bool = False          # a planning step has run for this challenge
     answer_submits: int = 0        # explicit submit_flag calls that reached the grader
+    time_total: float | None = None  # seconds this challenge had when it began
+    time_warned: bool = False        # the one late "time is short" note was sent
 
     def note(self, text: str) -> None:
         self.notes.append(text)
@@ -146,6 +148,8 @@ class Solver:
         self._no_progress = 0
         self._last_evidence_bytes = state.store.total_bytes
         self._stuck_nudged = False
+        if state.time_total is None:
+            state.time_total = budget.time_left(state.challenge_id)
 
     def _submit_grounded(self, newly: list) -> list:
         """Submit each newly grounded flag immediately. Returns the results so the
@@ -171,6 +175,7 @@ class Solver:
             "which tools you will use. If unsure of the type, say how you'll "
             "identify it. Keep it short; then begin executing.")))
         t0 = time.monotonic()
+        self._cap_request()
         try:
             resp = self.model.complete(self.state.messages, [])   # planning: no tools
         except (ModelError, ContextOverflow):
@@ -217,6 +222,7 @@ class Solver:
         # Record REAL output as evidence and stream any grounded flag now.
         # Reference material (knowledge base, summaries) is NOT evidence: an
         # example CTF{...} in a writeup must never ground.
+        off_format = len(self.state.store.rejected)
         newly = (self.state.store.record(res.source, res.output,
                                          cmd=_args_text(tc.arguments))
                  if res.output and res.is_evidence else [])
@@ -231,8 +237,29 @@ class Solver:
         self.log.observe(cid, res.name, len(res.output), cut, exit_code=res.exit_code,
                          error=res.error, seconds=round(took, 2),
                          output=self._for_log(res.output.decode("utf-8", "replace")))
+        # Tell the model what happened to each flag it just produced. Submission
+        # is automatic, and without this a rejected flag looks the same as an
+        # accepted one from where the model sits.
+        notes = []
         if newly:
-            self._submit_grounded(newly)
+            for gf, r in zip(newly, self._submit_grounded(newly)):
+                shown = _preview(gf.flag)
+                if r.accepted or r.already_solved:
+                    notes.append(f"[submitted {shown}: ACCEPTED. {self._progress_note()}]")
+                elif (r.raw or {}).get("transport_error"):
+                    notes.append(f"[submitted {shown}: the grader did not answer; it is "
+                                 "queued and will be re-sent. Keep working.]")
+                else:
+                    said = f" ({r.message.replace(gf.flag, shown)[:120]})" if r.message else ""
+                    notes.append(f"[submitted {shown}: NOT accepted{said}. It is not the "
+                                 "answer as it stands: a decoy, another stage's flag, or "
+                                 "in the wrong form.]")
+        for flag in self.state.store.rejected[off_format:]:
+            notes.append(f"[{_preview(flag)} looks like a flag but does not match the "
+                         "format this challenge states, so it was NOT submitted. If you "
+                         "are sure it is the answer, call submit_flag with it.]")
+        if notes:
+            text += "\n" + "\n".join(notes)
         for url in (res.meta or {}).get("images") or []:
             self._pending_images.append((str(res.meta.get("image_name", "")), url))
         return Message(role="tool", content=text, tool_call_id=tc.id, name=tc.name)
@@ -306,6 +333,32 @@ class Solver:
             return f".tool_output/{path.name}"
         except OSError:
             return None
+
+    def _cap_request(self) -> None:
+        """The next model request must end inside the budget (less the reserve)."""
+        left = self._tool_time_left()
+        self.model.request_timeout = None if left is None else max(1.0, left)
+
+    def _time_note(self) -> None:
+        """One note when a fifth of the time is left (at least two minutes'
+        warning on a long budget). The model cannot see the clock, and every
+        unsolved rehearsal run ended mid-exploration with nothing submitted."""
+        total = self.state.time_total
+        if self.state.time_warned or not total:
+            return
+        left = self.budget.time_left(self.state.challenge_id)
+        if left is None or left > max(total * 0.2, min(120.0, total * 0.5)):
+            return
+        self.state.time_warned = True
+        mins = max(1, round(left / 60))
+        text = (f"About {mins} minute(s) of your time budget remain. Stop exploring: "
+                "commit to the single most promising lead and push it to an answer.")
+        if self.submitter.allow_ungrounded:
+            text += (" If you have a candidate answer, even an uncertain one, submit it "
+                     "with submit_flag now: a wrong submission costs nothing.")
+        self.state.messages.append(Message(role="user", content=text))
+        self.log.event("solver.time_note", challenge=self.state.challenge_id,
+                       seconds_left=round(left))
 
     def _tool_time_left(self) -> float | None:
         left = self.budget.time_left(self.state.challenge_id)
@@ -417,6 +470,7 @@ class Solver:
 
             iters += 1
             self.state.iters_done += 1
+            self._time_note()
             self._diet()
             t0 = time.monotonic()
             try:
@@ -514,8 +568,7 @@ class Solver:
         for i in range(len(MODEL_RETRY_DELAYS) + 1):
             # A model call must end inside the budget, leaving the reserve for
             # the last submit and the log, exactly as tool calls do.
-            left = self._tool_time_left()
-            self.model.request_timeout = None if left is None else max(1.0, left)
+            self._cap_request()
             try:
                 return self.model.complete(self.state.messages, self.profile.schemas())
             except ContextOverflow:
@@ -636,6 +689,8 @@ def restart_recap(model: Model, state: SolverState, tools: list[dict], budget: B
     cid = state.challenge_id
     note = ""
     t0 = time.monotonic()
+    left = budget.time_left(cid)
+    model.request_timeout = None if left is None else max(1.0, left - limits.reserve_seconds)
     try:
         # Tools are passed because some backends reject a transcript containing
         # tool calls when none are declared; the prompt asks for text only.

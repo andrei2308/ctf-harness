@@ -81,14 +81,27 @@ class RunLog:
         # container's filesystem may not come back, but its output stream does;
         # stdout stays free for the final JSON summary.
         self._mirror = mirror
-        self.run_dir = Path(run_dir)
-        self.run_dir.mkdir(parents=True, exist_ok=True)
         self.run_id = run_id or time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-        self.path = self.run_dir / f"run-{self.run_id}.jsonl"
         self._lock = threading.Lock()
         self._seq = 0
-        self._fh = self.path.open("a", encoding="utf-8")
+        # An unwritable log directory (read-only image, another user) must not
+        # stop the run: fall back to a temporary directory, and if even that
+        # fails, to stderr alone.
+        from ..paths import writable_dir
+        moved = None
+        try:
+            self.run_dir, as_asked = writable_dir(run_dir, prefix="ctf-logs-")
+            self.path = self.run_dir / f"run-{self.run_id}.jsonl"
+            self._fh = self.path.open("a", encoding="utf-8")
+            if not as_asked:
+                moved = str(self.run_dir)
+        except OSError as e:
+            self.run_dir, self.path, self._fh = Path(run_dir), Path(os.devnull), None
+            self._mirror = True
+            moved = f"stderr only ({e})"
         self.event("run.start", run_id=self.run_id)
+        if moved:
+            self.event("run.log_dir_fallback", asked=str(run_dir), using=moved)
 
     def event(self, kind: str, *, challenge: str | None = None, **fields: Any) -> None:
         """Write one event. `kind` is a dotted name, e.g. 'attempt.start',
@@ -106,8 +119,13 @@ class RunLog:
             self._seq += 1
             payload["seq"] = self._seq
             line = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-            self._fh.write(line + "\n")
-            self._fh.flush()
+            if self._fh is not None:
+                try:
+                    self._fh.write(line + "\n")
+                    self._fh.flush()
+                except (OSError, ValueError):
+                    # A full disk must not end the run: keep going on stderr.
+                    self._fh, self._mirror = None, True
             if self._mirror:
                 try:
                     sys.stderr.write(line + "\n")
@@ -143,13 +161,16 @@ class RunLog:
 
     def close(self) -> None:
         with self._lock:
-            if not self._fh.closed:
-                self._fh.write(json.dumps(
-                    {"seq": self._seq + 1, "t": round(time.time(), 3), "kind": "run.end"},
-                    separators=(",", ":"),
-                ) + "\n")
-                self._fh.flush()
-                self._fh.close()
+            if self._fh is not None and not self._fh.closed:
+                try:
+                    self._fh.write(json.dumps(
+                        {"seq": self._seq + 1, "t": round(time.time(), 3), "kind": "run.end"},
+                        separators=(",", ":"),
+                    ) + "\n")
+                    self._fh.flush()
+                    self._fh.close()
+                except (OSError, ValueError):
+                    pass
 
     def __enter__(self) -> "RunLog":
         return self

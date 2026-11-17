@@ -27,6 +27,44 @@ no network; and GLM 5.3 Flash solved the fixtures through the OpenAI adapter,
 on the host and in the image. The image build, four tool wrappers and three
 solver behaviours needed fixes along the way; the report lists each one.
 
+**After the rehearsal (2026-11-17, branch `contest-readiness`, not yet built or
+run on a real machine):** the scope guard no longer refuses ordinary commands
+and has a setting; the model is told what happened to each flag it produced and
+when time is short; the prompt asks for batched steps; the work and log
+directories fall back to a temporary one if unwritable; a tools script adds the
+clients the agent lacked; and the contest adapter has a kit and a check command.
+`CLAUDE_CODE_FINAL.md` lists what must be verified before the freeze.
+
+## Contest day, step by step
+
+1. **Read the starter kit.** Find: how the challenge arrives, how a flag is
+   submitted and what comes back, the endpoint and model id, the limits, the
+   flag format, and whether a challenge is one service or a whole machine.
+2. **Write the adapter** in `harness/platforms/starter_kit.py`. The file lists
+   the ten lessons from the rehearsal and has a recipe per method;
+   `harness/platforms/kit.py` has the tested pieces. If the kit is CyberEDU's
+   own MCP server, write nothing: set `CTF_PLATFORM=cyberedu` and
+   `CTF_CONTEST_ID` (the server is already in the image).
+3. **Fill in `contest.env`:** the three model inputs, the limits, the flag
+   regex, `CTF_PLATFORM`, `CTF_TARGET_SCOPE`.
+4. **Check on your laptop**, if their endpoints are reachable from it:
+   ```bash
+   python -m harness.preflight                              # the model
+   python -m harness.adapter_check                          # the adapter, read-only
+   python -m harness.adapter_check --submit 'CTF{wrong}'    # a rejection comes back as one
+   ```
+   Read the block `adapter_check` prints under "what the agent is told". If
+   the flag format or the question is not in it, the agent does not know it.
+5. **Rebuild and check the image:**
+   ```bash
+   docker build -f Dockerfile.contest -t ctf-harness:latest .
+   docker run --rm ctf-harness:latest python scripts/check_image.py
+   ```
+6. **Upload, and aim the first run at the easiest challenge.** Logs appear
+   only after a solve, so one early solve is the only proof the pipeline works.
+7. **Then tune from what the logs show.** After the freeze, only `contest.env`
+   and `starter_kit.py` change.
+
 ## Changing settings on the day
 
 **One file: `contest.env`** at the repo root. Every setting in this document
@@ -186,6 +224,9 @@ entry) and is read from there at run time.
 | Small context window | `CTF_HISTORY_SOFT_CHARS`, `CTF_HISTORY_HARD_CHARS` | Defaults (40K / 160K chars) assume roughly 64K tokens or more |
 | Flag format | `CTF_FLAG_REGEX` | Default handles `CTF{..}` and prefixed forms like `DCTF{..}` only |
 | A wrong-flag penalty | `CTF_PENALIZE_WRONG=1` | Turns off ungrounded and repeat submissions |
+| A challenge is a whole machine, not one port | `CTF_TARGET_SCOPE=host` | The default refuses other ports on the target host, which is right only on shared infrastructure |
+| The model cannot see images (preflight check 7) | `CTF_VISION=0` | Drops `view_image` from the tool list |
+| A time limit well above or below 20 minutes | `CTF_LADDER_DEPTHS` | Turns per rung (default 12, 25, 40, 60); at 15 to 30 s a turn, 20 minutes is about 50 turns |
 | Cached input is free | raise `CTF_HISTORY_SOFT_CHARS` | Trimming old results breaks the cache prefix |
 
 Put the final values in `contest.env`; commented examples for each are already
@@ -194,17 +235,26 @@ there. The remaining size knobs are in `harness/agents/limits.py`.
 ## Platform inputs (still open)
 
 The harness also needs to be told the challenge and how to submit. That depends
-on the starter kit, which is not out yet.
+on the starter kit, which is not out yet. Whether the contest uses CyberEDU's
+MCP server is not known either, so both routes are prepared.
 
-- `CTF_PLATFORM` selects the adapter: `files`, `benchmark`, `mcp`, or
+- `CTF_PLATFORM` selects the adapter: `files`, `benchmark`, `cyberedu`, or
   `module:Class` for your own.
 - `CTF_CHALLENGE_ID` or `--challenge` picks the challenge; with neither, the
   first one the platform lists is used.
-- When the kit lands, fill in the four `TODO` methods in
-  `harness/platforms/starter_kit.py` (list the challenge, fetch its files, say
-  where the service is, submit a flag) and uncomment its `CTF_PLATFORM` line in
-  `contest.env`. No other file needs touching. Raise `PlatformError` on
-  transport failures; `submit_flag` is then retried and queued for you.
+- **Route A, your own adapter:** fill in the four methods in
+  `harness/platforms/starter_kit.py` and uncomment its `CTF_PLATFORM` line in
+  `contest.env`. `harness/platforms/kit.py` gives you `http_json` (a 4xx is an
+  answer, only a missing answer raises), `http_download` (real file names),
+  `conn_from` (every address form, and an error when it cannot be read) and
+  `describe` (per-flag questions into the description).
+- **Route B, CyberEDU's MCP server:** it is in the image under
+  `/opt/cyberedu-mcp`, off the agent's path and idle unless selected. Set
+  `CTF_PLATFORM=cyberedu` and `CTF_CONTEST_ID=<slug>`; the cookie is read from
+  `CYBEREDU_SESSION_COOKIE` at run time. Practice mode is proven by 23
+  rehearsal runs; **contest mode has not met a live contest.**
+- **Either way, run `python -m harness.adapter_check` before uploading.** It
+  walks the adapter as a run does and prints what the agent would be told.
 
 ## Your notes in the image
 
@@ -220,15 +270,6 @@ Two things to know:
 - The category match goes by path names (`pwn_notes/`, `crypto/`,
   `forensics_notes.md`, ...). A new top-level folder with a different naming
   scheme needs a line in `_CATEGORY_PATHS` in `harness/agents/knowledge.py`.
-
-## Before the event
-
-1. Build the image and run the three `docker run` checks above.
-2. Convert one benchmark suite (`BENCHMARKS.md`) and run it against any real
-   model. Read transcripts of the failures; that is where the next gains are.
-3. Decide whether the image size is acceptable (`WITH_SAGE`, `WITH_WORDLISTS`).
-4. On the day: fill in `contest.env` (three inputs, then limits), run preflight,
-   fill in `starter_kit.py`, rebuild, run preflight inside the image.
 
 ## Known gaps
 
@@ -270,9 +311,19 @@ Two things to know:
   boundaries held. A separate user for the agent's shell would close it.
 - **gdb cannot disable ASLR** under Docker's default seccomp profile
   (`personality` is blocked); addresses differ from run to run under gdb.
-- **Image tools missing** that rehearsal runs wanted: a PHP interpreter, an
-  ssh client with `sshpass`, Wine. Adding them is a tool-layer rebuild plus a
-  new `:base` and backup; Andrei's decision.
+- **Tools the rehearsal wanted** (PHP, an ssh client with `sshpass`, plus
+  telnet, ftp, smbclient, database clients, node, 32-bit libraries, the `mcp`
+  client and CyberEDU's server) are in `scripts/image_extras.sh`. They are in
+  the image only once `Dockerfile.tools` has been built and `:base` re-tagged;
+  `scripts/check_image.py` lists each one. Wine is left out (large, and one
+  challenge wanted it).
+- **The scope guard is a guard, not a firewall.** With the default
+  `CTF_TARGET_SCOPE=service` it refuses scanners and other ports on the target
+  host, and a script that builds an address at run time gets past it. The
+  contest sandbox's own isolation is the real boundary there.
+- **The contest configuration (`CTF_PENALIZE_WRONG=0`) has not run on real
+  challenges.** All 23 rehearsal runs used the penalty setting to keep junk off
+  the CyberEDU account. `CLAUDE_CODE_FINAL.md` has it run on an offline suite.
 - **Unpinned downloads:** RsaCtfTool, jwt_tool and the Foundry installer
   follow upstream HEAD. The base image is pinned by digest; bump it
   deliberately, never on contest day (a new base invalidates every cached

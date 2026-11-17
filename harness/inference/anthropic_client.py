@@ -36,7 +36,7 @@ class AnthropicModel(Model):
             import anthropic  # noqa: F401
         except ImportError as e:  # pragma: no cover
             raise ModelError("anthropic SDK not installed; `pip install anthropic`") from e
-        kwargs = {"max_retries": 1,
+        kwargs = {"max_retries": 0,     # the solver retries; see openai_client
                   "timeout": float(os.environ.get("CTF_MODEL_TIMEOUT") or 300)}
         if self._api_key:
             kwargs["api_key"] = self._api_key

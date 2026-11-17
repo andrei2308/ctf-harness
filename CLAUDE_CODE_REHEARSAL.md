@@ -1,5 +1,8 @@
 # Rehearsal on real challenges: instructions for Claude Code
 
+> **Completed 2026-11-17.** Results are in `REHEARSAL_REPORT.md`. The next
+> brief is `CLAUDE_CODE_FINAL.md`. Kept for reference.
+
 You are on Andrei's Kali machine, in the `ctf-harness` repo. The image is built
 and validated (`VALIDATION_REPORT.md`). What is still unknown is whether the
 agent solves real challenges, because so far it has only met three toy

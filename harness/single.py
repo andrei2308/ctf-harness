@@ -33,6 +33,7 @@ from . import egress
 from .flags.decoys import known_decoys
 from .flags.grounding import format_check
 from .flags.submit import FlagSubmitter
+from .paths import writable_dir
 from .platforms.base import Challenge, Platform, PlatformError
 from .scheduler.budget import Budget, BudgetExceeded
 from .scheduler.ladder import Ladder
@@ -72,12 +73,16 @@ def run_challenge(*, challenge: Challenge, platform: Platform, ladder: Ladder,
     """
     cid = challenge.id
     submitter.register(cid, challenge.flags_required)
-    work_dir = Path(work_root) / _safe(cid)
-    work_dir.mkdir(parents=True, exist_ok=True)
+    # Falls back to a temporary directory if the configured one is unwritable
+    # (read-only image, or a container user that does not own it).
+    work_dir, as_asked = writable_dir(Path(work_root) / _safe(cid), prefix="ctf-work-")
+    if not as_asked:
+        log.event("challenge.work_dir_fallback", challenge=cid,
+                  asked=str(Path(work_root) / _safe(cid)), using=str(work_dir))
 
     if available is None:
         try:
-            available = probe_tools(executor, Path(work_root))
+            available = probe_tools(executor, work_dir)
             log.event("tools.probed", available=sorted(available))
         except Exception as e:  # noqa: BLE001
             available = set()
@@ -115,6 +120,10 @@ def run_challenge(*, challenge: Challenge, platform: Platform, ladder: Ladder,
     ctx = ToolContext(challenge_id=cid, work_dir=work_dir, executor=executor, conn=conn)
     sys_p = specialist.system_prompt()
     task_p = specialist.task_prompt(challenge, work_dir, conn, files, available=available)
+    total = budget.time_left(cid)
+    if total:
+        task_p += (f"\nTime budget for this challenge: about {max(1, round(total / 60))} "
+                   "minutes in total, which is a few dozen steps.")
     # Flag-shaped strings shipped in the harness's own directories are never the
     # answer in the contest; with the fixtures rig they ARE the answers.
     decoys = frozenset() if platform.answers_on_disk else known_decoys()

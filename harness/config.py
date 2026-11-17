@@ -72,8 +72,19 @@ class Config:
     # on hidden thinking, and the low rungs' 4096 can be gone before it acts.
     min_output_tokens: int | None = None
 
+    # Turns per rung, overriding the default 12, 25, 40, 60 (CTF_LADDER_DEPTHS,
+    # comma-separated, first rung first; fewer values leave the rest alone).
+    # Rehearsal never got past rung 2 in 20 minutes, so the restart path was
+    # never exercised: small depths reach it in a few minutes. On the day, size
+    # the depths to the announced time limit.
+    ladder_depths: tuple[int, ...] = ()
+
     def ladder(self) -> Ladder:
         ladder = default_ladder(self.fast_model, self.strong_model)
+        if self.ladder_depths:
+            ladder = Ladder([Rung(r.spec, max(1, self.ladder_depths[i]))
+                             if i < len(self.ladder_depths) else r
+                             for i, r in enumerate(ladder.rungs)])
         floor, cap = self.min_output_tokens, self.max_output_tokens
         if floor or cap:
             def fit(n: int) -> int:
@@ -142,6 +153,18 @@ def make_platform(config: Config):
     raise ValueError(f"unknown platform: {config.platform}")
 
 
+def _depths(raw: str) -> tuple[int, ...]:
+    out = []
+    for part in raw.replace(";", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if not part.isdigit():
+            return ()            # a typo must not silently reshape half the ladder
+        out.append(int(part))
+    return tuple(out)
+
+
 def config_from_env() -> Config:
     """Build a Config from env vars (handy in a sandbox). Only non-secret knobs;
     model/platform credentials are read by the adapters themselves. Settings in
@@ -185,4 +208,7 @@ def config_from_env() -> Config:
         log_mirror=os.environ.get("CTF_LOG_MIRROR", "").lower() in ("1", "true", "yes"),
         max_output_tokens=_opt_int("CTF_MAX_OUTPUT_TOKENS"),
         min_output_tokens=_opt_int("CTF_MIN_OUTPUT_TOKENS"),
+        ladder_depths=_depths(os.environ.get("CTF_LADDER_DEPTHS", "")),
+        fresh_context_on_escalate=os.environ.get("CTF_FRESH_CONTEXT", "").lower()
+        in ("1", "true", "yes"),
     )

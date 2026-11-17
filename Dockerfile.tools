@@ -1,0 +1,22 @@
+# Add the post-rehearsal tools to the existing base image, without a full build.
+#
+# The full Dockerfile needs every earlier layer in the build cache (or 30
+# minutes and a Kali that has moved on since the 15th). This starts from the
+# validated ctf-harness:base and runs only scripts/image_extras.sh on top.
+#
+#   docker tag  ctf-harness:base ctf-harness:base-1115            # keep the old one
+#   docker build -f Dockerfile.tools -t ctf-harness:base-next .
+#   docker build -f Dockerfile.contest --build-arg BASE=ctf-harness:base-next \
+#                -t ctf-harness:latest .
+#   docker run --rm ctf-harness:latest python scripts/check_image.py   # must stay 0 critical
+#   docker tag  ctf-harness:base-next ctf-harness:base              # only when it passes
+#   docker save ctf-harness:base | pigz > ~/ctf-harness-base.tar.gz # new backup
+#
+# Needs the network (apt, PyPI, GitHub). The main Dockerfile runs the same
+# script, so a from-scratch build ends up with the same tools.
+ARG BASE=ctf-harness:base
+FROM ${BASE}
+ARG WITH_CYBEREDU_MCP=1
+COPY scripts/image_extras.sh /tmp/image_extras.sh
+RUN WITH_CYBEREDU_MCP=${WITH_CYBEREDU_MCP} bash /tmp/image_extras.sh; rm -f /tmp/image_extras.sh
+ENV CTF_CYBEREDU_MCP_PYTHON=/opt/cyberedu-mcp/bin/python

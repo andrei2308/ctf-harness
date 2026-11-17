@@ -112,6 +112,24 @@ CHECKS: list[tuple[str, str, bool]] = [
      "assert b\"No module named\" not in r.output and not r.error, (r.error, r.output[-300:]); "
      "assert b\"symbol\" in r.output.lower() or b\"unsatisfied\" in r.output.lower(), r.output[-300:]'", O),
     # --- the harness itself ---------------------------------------------------
+    # --- added after the rehearsal (scripts/image_extras.sh) ------------------
+    ("ssh client + sshpass", have("ssh", "sshpass"), O),
+    ("telnet / ftp", have("telnet", "ftp"), O),
+    ("smbclient", have("smbclient"), O),
+    ("mysql / psql / redis-cli", have("mysql", "psql", "redis-cli"), O),
+    ("sqlite3 CLI", have("sqlite3"), O),
+    ("php runs", "php -r 'echo 6*7;' | grep -q 42", O),
+    ("node runs", "node -e 'console.log(6*7)' | grep -q 42", O),
+    ("32-bit ELF loader", "test -e /lib/ld-linux.so.2", O),
+    ("bs4 / jwt / websocket", "python3 -c 'import bs4, jwt, websocket'", O),
+    ("Pillow for view_image", "/opt/venv/bin/python -c 'import PIL'", O),
+    ("mcp client library", "/opt/venv/bin/python -c 'import mcp'", O),
+    ("CyberEDU MCP server (dormant)",
+     "/opt/cyberedu-mcp/bin/python -c 'import cyberedu_mcp'", O),
+    ("contest.env puts the agent's work dir outside the harness tree",
+     "/opt/venv/bin/python -c \"import sys; from harness.config import config_from_env; "
+     "w = config_from_env().work_root; "
+     "sys.exit(not w.startswith('/') or w.startswith('/opt/ctf-harness'))\"", O),
     ("openai SDK importable by the harness",
      "/opt/venv/bin/python -c 'import openai; print(openai.__version__)'", C),
     ("contest.env is in the image", "test -s /opt/ctf-harness/contest.env", C),

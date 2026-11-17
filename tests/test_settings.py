@@ -70,11 +70,12 @@ def test_env_file_can_be_disabled_and_missing_is_fine(tmp_path, monkeypatch):
 
 
 def test_shipped_settings_file_parses_and_only_enables_safe_defaults(monkeypatch):
-    for k in ("CTF_BACKEND", "CTF_LOG_MIRROR"):
+    for k in ("CTF_BACKEND", "CTF_LOG_MIRROR", "CTF_WORK_ROOT", "CTF_RUN_DIR"):
         monkeypatch.delenv(k, raising=False)
     applied = load_env_file(DEFAULT_FILE)
     try:
-        assert applied == {"CTF_BACKEND": "openai", "CTF_LOG_MIRROR": "1"}
+        assert applied == {"CTF_BACKEND": "openai", "CTF_LOG_MIRROR": "1",
+                           "CTF_WORK_ROOT": "/tmp/ctf-work", "CTF_RUN_DIR": "/var/tmp/ctf-logs"}
     finally:
         for k in applied:
             os.environ.pop(k, None)

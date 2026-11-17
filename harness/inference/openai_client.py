@@ -69,7 +69,10 @@ class OpenAIModel(Model):
             raise ModelError("openai SDK not installed; `pip install openai`") from e
         # One request must not hang a slot: the SDK default is 10 minutes with
         # its own retries on top. The solver does the backing off.
-        kwargs = {"api_key": self._api_key, "max_retries": 1,
+        # max_retries=0: the SDK retries a TIMEOUT too, which doubles the time a
+        # capped request can take. The solver retries with backoff and re-reads
+        # the time left before each try.
+        kwargs = {"api_key": self._api_key, "max_retries": 0,
                   "timeout": float(os.environ.get("CTF_MODEL_TIMEOUT") or 300)}
         if self._base_url:
             kwargs["base_url"] = self._base_url

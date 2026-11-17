@@ -160,6 +160,16 @@ RUN if [ "$WITH_WORDLISTS" = "1" ]; then apt-get update && \
       rm -rf /var/lib/apt/lists/*; \
       ([ -f /usr/share/wordlists/rockyou.txt.gz ] && gunzip -kf /usr/share/wordlists/rockyou.txt.gz || true); fi
 
+# --- late additions (after the rehearsal) -----------------------------------
+# Clients and interpreters the agent wanted and did not have, the MCP client
+# library, and CyberEDU's MCP server (dormant unless CTF_PLATFORM=cyberedu). One
+# script, also run by Dockerfile.tools on top of an existing base image, which
+# is the quick way to add these without rebuilding everything above.
+ARG WITH_CYBEREDU_MCP=1
+COPY scripts/image_extras.sh /tmp/image_extras.sh
+RUN WITH_CYBEREDU_MCP=${WITH_CYBEREDU_MCP} bash /tmp/image_extras.sh; rm -f /tmp/image_extras.sh
+ENV CTF_CYBEREDU_MCP_PYTHON=/opt/cyberedu-mcp/bin/python
+
 # --- the harness ------------------------------------------------------------
 # Its Python dependencies go in their own layer BEFORE the source is copied, so
 # a rebuild after editing contest.env or the platform adapter needs no network

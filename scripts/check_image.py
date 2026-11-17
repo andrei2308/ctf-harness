@@ -119,6 +119,15 @@ CHECKS: list[tuple[str, str, bool]] = [
     ("mysql / psql / redis-cli", have("mysql", "psql", "redis-cli"), O),
     ("sqlite3 CLI", have("sqlite3"), O),
     ("php runs", "php -r 'echo 6*7;' | grep -q 42", O),
+    ("ping / ip / ss", have("ping", "ip", "ss"), O),
+    ("matplotlib / scipy", "python3 -c 'import matplotlib, scipy'", O),
+    # A sandbox that drops NET_RAW must not make nmap unrunnable (file caps).
+    # (Only root can drop capabilities; as another user, run nmap directly.)
+    ("nmap runs without NET_RAW",
+     "if [ \"$(id -u)\" = 0 ]; then capsh --drop=cap_net_raw,cap_net_admin -- -c 'nmap -V'; "
+     "else nmap -V; fi 2>&1 | grep -q 'Nmap version'", O),
+    ("forge outside /root (works as non-root)",
+     "test -x /usr/local/bin/forge && /usr/local/bin/forge --version", O),
     ("node runs", "node -e 'console.log(6*7)' | grep -q 42", O),
     ("32-bit ELF loader", "test -e /lib/ld-linux.so.2", O),
     ("bs4 / jwt / websocket", "python3 -c 'import bs4, jwt, websocket'", O),

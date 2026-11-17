@@ -24,6 +24,8 @@ for p in \
     libc6-i386 lib32stdc++6 \
     `# small forensics helpers` \
     pngcheck \
+    `# found missing in the rehearsal logs: ss/ip (2 runs), ping (1 run)` \
+    iproute2 iputils-ping \
     ; do
   apt-get install -y --no-install-recommends "$p" || echo "WARN: apt skip $p"
 done
@@ -34,7 +36,9 @@ rm -rf /var/lib/apt/lists/*
 #                  (the 2.x SDK breaks CyberEDU's server)
 #   pillow         view_image resizes with it (falls back to raw PNG/JPEG)
 #   the rest       everyday web-challenge helpers
-for p in "mcp<2" pillow beautifulsoup4 pyjwt websocket-client; do
+#   matplotlib     zodiac (rehearsal) reached for it to plot a mouse trail;
+#                  pairs with view_image. scipy: also reached for, general.
+for p in "mcp<2" pillow beautifulsoup4 pyjwt websocket-client matplotlib scipy; do
   /opt/venv/bin/pip install --no-cache-dir "$p" || echo "WARN: pip skip $p"
 done
 
@@ -52,4 +56,20 @@ if [ "${WITH_CYBEREDU_MCP:-1}" = "1" ]; then
          "cyberedu-mcp @ git+https://github.com/CyberEDU-Cyber-Range/cyberedu-mcp@${MCP_REF}" \
   ) || echo "WARN: cyberedu-mcp skip"
 fi
+# File capabilities make a binary unrunnable when the sandbox's capability
+# bounding set lacks them: Kali's nmap (cap_net_raw,cap_net_admin=eip) fails
+# with "exec: Operation not permitted" under `docker run --cap-drop NET_RAW`
+# (seen in final-round task 1). The container runs as root, so the file
+# capabilities add nothing; a connect scan (-sT) needs no raw socket.
+command -v getcap >/dev/null && getcap -r / 2>/dev/null | awk '{print $1}' | while read -r f; do
+  setcap -r "$f" && echo "file capabilities removed: $f" || echo "WARN: setcap -r $f"
+done
+
+# Foundry was installed under /root/.foundry (mode 700): under
+# `docker run --user 1000:1000` forge and cast vanished. Put them on a path
+# every user can read.
+for b in /root/.foundry/bin/*; do
+  [ -f "$b" ] && install -m 755 "$b" /usr/local/bin/ || true
+done
+
 exit 0

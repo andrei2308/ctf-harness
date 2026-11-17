@@ -311,3 +311,36 @@ def test_only_default_tags_are_the_category_the_rest_are_hints():
     c = p.get_challenge(CID)
     assert c.category == "Misc, Programming"
     assert "Tags: D-CTF 2019 - Final Phase; Predictable Exact Value" in c.description
+
+
+NETCAT = {"deploymentStatus": "running", "service_type": "netcat",
+          "address": "nc 34.159.226.213 30206", "formattedAddress": "nc 34.159.226.213 30206",
+          "formattedAddresses": [{"address": "34.159.226.213:30206", "name": "Port 40000",
+                                  "service_type": "ip:port"}]}
+
+
+def test_a_netcat_service_address_is_understood():
+    # ret2win (rehearsal): "nc HOST PORT" was read as no target at all.
+    pwn = {**DETAIL, "tags": [{"name": "Pwn", "type": "default"}]}
+    p, _ = _plat({"cyberedu_get_challenge": pwn, "cyberedu_get_service_status": NETCAT})
+    c = p.start_instance(CID)
+    assert (c.host, c.port, c.url) == ("34.159.226.213", 30206, None)
+    bare = {**NETCAT, "formattedAddresses": []}           # only the nc form
+    p2, _ = _plat({"cyberedu_get_challenge": pwn, "cyberedu_get_service_status": bare})
+    assert p2.start_instance(CID).port == 30206
+
+
+def test_a_running_service_with_an_unreadable_address_fails_loudly():
+    odd = {**NETCAT, "address": "see the dashboard", "formattedAddress": "",
+           "formattedAddresses": []}
+    p, _ = _plat({"cyberedu_get_service_status": odd})
+    with pytest.raises(PlatformError, match="not understood"):
+        p.start_instance(CID)
+
+
+def test_a_rate_limited_submission_is_retryable():
+    limited = {"error": "HTTP Error", "status_code": 429,
+               "message": "Too many requests", "response": '{"message": "Too many requests"}'}
+    p, _ = _plat({"cyberedu_submit_flag": limited})
+    with pytest.raises(PlatformError):
+        p.submit_flag(CID, "CTF{x}")

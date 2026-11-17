@@ -325,8 +325,11 @@ class CyberEduMcpPlatform(Platform):
                                   self._args(challenge_id, flag_id=str(flag_id), flag_value=flag))
             except PlatformError as e:
                 status = getattr(e.__cause__, "status", None)
-                if status is None or status >= 500:
-                    raise                      # transport or server error: retryable
+                if status is None or status >= 500 or status == 429:
+                    # Transport, server error, or 429 "Too many requests" (seen
+                    # live when three candidates went out in one second): all
+                    # retryable. A correct flag must not be lost to a rate limit.
+                    raise
                 # A 4xx is the grader's answer, not an outage: never retried.
                 # 403 "Challenge already solved" comes back for ANY value sent to
                 # a flag this account already solved (seen live on biscuiti), so it
@@ -402,17 +405,21 @@ class CyberEduMcpPlatform(Platform):
 
     @staticmethod
     def _to_conn(status: dict, detail: dict) -> ConnInfo:
-        address = str(status.get("address") or status.get("formattedAddress") or "")
-        host, _, port = address.rpartition(":")
-        if not host:
-            return ConnInfo()
+        host, port = _parse_address(status)
+        if not host or not port:
+            # Running but unreadable: say so. Returning an empty ConnInfo here
+            # told the agent "files only" on ret2win (address "nc HOST PORT"),
+            # and it spent its run auditing the harness for the missing target.
+            raise PlatformError(f"service is running but its address is not understood: "
+                                f"{status.get('address')!r}")
+        address = f"{host}:{port}"
         url = None
         if _kind_from_tags([t.get("name", "") for t in detail.get("tags") or []
                             if isinstance(t, dict) and t.get("type", "default") == "default"]
                            ) == ChallengeKind.WEB:
             url = f"http://{address}"
         expires = (status.get("terminate_at") or {}).get("timestamp")
-        return ConnInfo(host=host, port=_int(port), url=url,
+        return ConnInfo(host=host, port=port, url=url,
                         expires_at=float(expires) if expires else None,
                         meta={"service_type": status.get("service_type"),
                               "addresses": status.get("formattedAddresses")})
@@ -439,6 +446,25 @@ class _HttpError(Exception):
     def __init__(self, status: int):
         super().__init__(status)
         self.status = status
+
+
+def _parse_address(status: dict) -> tuple[str | None, int | None]:
+    """(host, port) of a running service. Seen live: 'ip:port' services give
+    "35.242.202.105:32287"; 'netcat' services give "nc 34.159.226.213 30206"
+    in `address`, with "34.159.226.213:30206" in formattedAddresses."""
+    import re as _re
+    for entry in status.get("formattedAddresses") or []:
+        text = str(entry.get("address", "") if isinstance(entry, dict) else entry)
+        m = _re.fullmatch(r"\s*([^\s:]+):(\d{1,5})\s*", text)
+        if m:
+            return m.group(1), int(m.group(2))
+    for text in (status.get("address"), status.get("formattedAddress")):
+        text = str(text or "")
+        m = (_re.fullmatch(r"\s*(?:nc|ncat|netcat)\s+(\S+)\s+(\d{1,5})\s*", text)
+             or _re.fullmatch(r"\s*([^\s:]+):(\d{1,5})\s*", text))
+        if m:
+            return m.group(1), int(m.group(2))
+    return None, None
 
 
 def _running(status: dict) -> bool:

@@ -42,11 +42,19 @@ clients the agent lacked; and the contest adapter has a kit and a check command.
    flag format, and whether a challenge is one service or a whole machine.
 2. **Write the adapter** in `harness/platforms/starter_kit.py`. The file lists
    the ten lessons from the rehearsal and has a recipe per method;
-   `harness/platforms/kit.py` has the tested pieces. If the kit is CyberEDU's
-   own MCP server, write nothing: set `CTF_PLATFORM=cyberedu` and
-   `CTF_CONTEST_ID` (the server is already in the image).
+   `harness/platforms/kit.py` has the tested pieces, and
+   `harness/platforms/example_http.py` is a complete adapter written from the
+   skeleton in the drill (an HTTP kit with a token, flags as questions, a
+   rate-limited submit). If flags are questions with ids, send each value to
+   the open questions in turn and space your own calls with `kit.Pacer`: one
+   submit_flag hitting several questions got HTTP 429 in the drill. If the kit
+   is CyberEDU's own MCP server, write nothing: set `CTF_PLATFORM=cyberedu`
+   and `CTF_CONTEST_ID` (the server is already in the image).
 3. **Fill in `contest.env`:** the three model inputs, the limits, the flag
-   regex, `CTF_PLATFORM`, `CTF_TARGET_SCOPE`.
+   regex, `CTF_PLATFORM`, `CTF_TARGET_SCOPE`. The flag regex is not optional
+   when the format is not `CTF{...}` (say `DCTF{...}` or `FLAG{...}`): the
+   default pattern only matches `...CTF{...}`, and a flag it cannot match is
+   never submitted automatically.
 4. **Check on your laptop**, if their endpoints are reachable from it:
    ```bash
    python -m harness.preflight                              # the model
@@ -55,6 +63,8 @@ clients the agent lacked; and the contest adapter has a kit and a check command.
    ```
    Read the block `adapter_check` prints under "what the agent is told". If
    the flag format or the question is not in it, the agent does not know it.
+   A `[WARN]` that the stated format does not match the flag pattern means
+   step 3's regex is missing or wrong: fix it before uploading.
 5. **Rebuild and check the image:**
    ```bash
    docker build -f Dockerfile.contest -t ctf-harness:latest .

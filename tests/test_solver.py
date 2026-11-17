@@ -142,3 +142,17 @@ def test_secret_values_never_reach_the_model_or_the_log(monkeypatch):
     assert key not in sent and secrets.MARK in sent
     assert key not in open(log.path).read()
     secrets._registered.discard(key)
+
+
+def test_model_turn_logs_reasoning_tokens():
+    model = ScriptedModel([
+        ModelResponse(tool_calls=(ToolCall(id="1", name="reveal", arguments={}),),
+                      usage=Usage(input=10, output=900), stop_reason="tool_calls",
+                      reasoning_tokens=850),
+    ])
+    solver, plat, sub, log = _mk(model, ToolProfile("t", [_EchoFlagTool()]))
+    solver.run()
+    log.close()
+    import json
+    turn = next(json.loads(l) for l in open(log.path) if '"model.turn"' in l)
+    assert turn["reasoning"] == 850

@@ -507,6 +507,9 @@ class Solver:
                            calls=[tc.name for tc in resp.tool_calls],
                            tokens_in=resp.usage.input, tokens_out=resp.usage.output,
                            stop=resp.stop_reason,
+                           # hidden reasoning, when the endpoint reports it: the
+                           # effort test had to infer it from tokens_out
+                           reasoning=getattr(resp, "reasoning_tokens", None),
                            seconds=round(time.monotonic() - t0, 2))
 
             if resp.wants_tools:

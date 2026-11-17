@@ -38,8 +38,8 @@ DEFAULT_FLAG_RE = re.compile(rb"CTF\{[^{}\r\n]{1,512}\}", re.IGNORECASE)
 # The default used at run time. The flag grammar is not confirmed, and both
 # `CTF{..}` and prefixed forms such as `DCTF{..}` are plausible, so this captures
 # up to 8 alphanumerics glued to the front as `prefix` and the bare form as
-# `bare`. A match with a prefix yields BOTH candidates (bare first): one of them
-# is right, and which one cannot be told from the bytes alone ("DCTF{x}" vs a
+# `bare`. A match with a prefix yields BOTH candidates (a letters-only prefix
+# first, a prefix with digits last): one of them is right, and which one cannot be told from the bytes alone ("DCTF{x}" vs a
 # "CTF{x}" that follows padding in a dump).
 VARIANT_FLAG_RE = re.compile(
     rb"(?P<prefix>[A-Za-z0-9]{0,8}?)(?P<bare>CTF\{[^{}\r\n]{1,512}\})", re.IGNORECASE)
@@ -91,8 +91,16 @@ def candidates(pattern: re.Pattern[bytes], data: bytes) -> list[bytes]:
         groups = m.groupdict()
         if groups.get("bare") is not None:
             found = [groups["bare"]]
-            if groups.get("prefix"):
-                found.append(groups["prefix"] + groups["bare"])
+            prefix = groups.get("prefix") or b""
+            if prefix:
+                # Letters glued to the front ("DCTF{", "UNBRK..") are part of
+                # the flag far more often than not: try that form first (contest
+                # mode on investigator: the bare form went out first and was
+                # wrong). Digits are dump padding ("1da00de3CTF{"): bare first.
+                if prefix.isalpha():
+                    found.insert(0, prefix + groups["bare"])
+                else:
+                    found.append(prefix + groups["bare"])
         else:
             found = [m.group(0)]
         for raw in found:

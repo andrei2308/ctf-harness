@@ -95,3 +95,14 @@ def test_format_check_reads_sha256sum():
     from harness.flags.grounding import format_check
     chk = format_check("1. What is the flag? (format: ctf{sha256sum})")
     assert chk and chk("ctf{" + "a" * 64 + "}") and not chk("ctf{try_harder}")
+
+
+def test_a_letters_prefix_is_tried_first_and_digits_padding_last(monkeypatch):
+    # Contest mode on investigator: bare CTF{...} went out first and was wrong;
+    # the DCTF{...} the program printed was right.
+    from harness.flags.grounding import EvidenceStore, flag_pattern
+    monkeypatch.delenv("CTF_FLAG_REGEX", raising=False)
+    got = [g.flag for g in EvidenceStore(pattern=flag_pattern()).record("t", b"x DCTF{abc} y")]
+    assert got == ["DCTF{abc}", "CTF{abc}"]
+    got = [g.flag for g in EvidenceStore(pattern=flag_pattern()).record("t", b"00de3CTF{abc}")]
+    assert got[0] == "CTF{abc}"

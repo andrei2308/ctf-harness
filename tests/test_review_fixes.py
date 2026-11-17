@@ -311,8 +311,9 @@ def test_dead_endpoint_ends_the_attempt_as_error():
 
 def test_prefixed_flag_yields_both_candidates():
     store = EvidenceStore(pattern=flag_pattern())
+    # A letters-only prefix goes first (contest-mode finding on investigator).
     assert [g.flag for g in store.record("x", b"got DCTF{abc123} here")] == \
-        ["CTF{abc123}", "DCTF{abc123}"]
+        ["DCTF{abc123}", "CTF{abc123}"]
     assert [g.flag for g in store.record("y", b"plain CTF{zzz}.")] == ["CTF{zzz}"]
 
 
@@ -320,7 +321,7 @@ def test_prefixed_flag_is_solved_end_to_end():
     plat = _Plat(answer="DCTF{abc123}")
     solver, _, _, _ = _solver(_Fn(lambda n, m: _call(n, "flag: DCTF{abc123}")), plat=plat)
     assert solver.run().outcome == Outcome.SOLVED
-    assert plat.calls == ["CTF{abc123}", "DCTF{abc123}"]
+    assert plat.calls == ["DCTF{abc123}"]          # right on the first submission
 
 
 def test_flag_regex_from_env(monkeypatch):

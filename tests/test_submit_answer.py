@@ -108,3 +108,12 @@ def test_explicit_submissions_are_capped_when_wrong_answers_cost():
            max_iterations=20, plan_first=False).run()
     log.close()
     assert len(plat.calls) == cap
+
+
+def test_ungrounded_guesses_are_capped_when_wrong_flags_are_free():
+    # Contest mode on zodiac: 22 guessed spellings went out.
+    from harness.agents.base import MAX_GUESSES
+    script = [_call(10 + i, "submit_flag", flag=f"ctf{{try_{i}}}") for i in range(MAX_GUESSES + 4)]
+    out, plat, state = _run(script, penalize=False)
+    assert len(plat.calls) == MAX_GUESSES
+    assert any("guess budget" in m.content for m in state.messages)

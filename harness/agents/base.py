@@ -16,6 +16,7 @@ SolverState with a higher rung's model.
 from __future__ import annotations
 
 import json
+import os
 import time
 from collections import deque
 from dataclasses import dataclass, field, replace
@@ -43,6 +44,13 @@ MODEL_RETRY_DELAYS = (2.0, 5.0, 10.0, 20.0, 30.0)
 MAX_PROSE_TURNS = 2
 _sleep = time.sleep          # indirection so tests can skip real waits
 # Explicit answers (submit_flag) per challenge: few when a wrong one costs.
+# Ungrounded guesses per challenge when wrong flags are free (CTF_MAX_GUESSES).
+# Contest mode on zodiac: 22 spellings of a handwritten phrase went out, none
+# right; past a handful, guessing hides that the model is stuck and courts the
+# grader's rate limit.
+MAX_GUESSES = 8
+_GUESSES_SPENT = ("not submitted: the guess budget for this challenge is spent. Stop "
+                  "guessing variants; derive the exact answer from real output.")
 MAX_ANSWER_SUBMITS_PENALIZED = 3
 MAX_ANSWER_SUBMITS = 20
 _CUT_OFF_NOTE = ("Your last reply hit the output limit before you acted, so "
@@ -83,6 +91,7 @@ class SolverState:
     notes: list[str] = field(default_factory=list)
     planned: bool = False          # a planning step has run for this challenge
     answer_submits: int = 0        # explicit submit_flag calls that reached the grader
+    guesses: int = 0               # ungrounded submissions (only when wrong flags are free)
     time_total: float | None = None  # seconds this challenge had when it began
     time_warned: bool = False        # the one late "time is short" note was sent
 
@@ -284,6 +293,9 @@ class Solver:
                 return out("", error=("not submitted: that value is not in the output of any "
                                       "command (other than one that prints it verbatim). "
                                       "Submit the answer exactly as a tool produced it."))
+            if self._guesses_spent():
+                return out("", error=_GUESSES_SPENT)
+            self.state.guesses += 1
             gf = GroundedFlag(flag=value, raw=value.encode("utf-8", "replace"),
                               source="submit_flag (ungrounded)", evidence_seq=0)
         self.state.answer_submits += 1
@@ -291,6 +303,9 @@ class Solver:
         if res.accepted or res.already_solved:
             return out(f"Accepted. {self._progress_note()}")
         return out(f"Not accepted. {res.message or ''}".strip())
+
+    def _guesses_spent(self) -> bool:
+        return self.state.guesses >= int(os.environ.get("CTF_MAX_GUESSES") or MAX_GUESSES)
 
     def _attach_images(self) -> None:
         """Images a tool produced go to the model in one user message after the
@@ -603,9 +618,10 @@ class Solver:
             gf = verify_candidate(self.state.store, claimed)
             if gf:
                 grounded = True
-            elif self.submitter.allow_ungrounded:
+            elif self.submitter.allow_ungrounded and not self._guesses_spent():
                 self.log.flag_candidate(cid, claimed[:16], grounded=False,
                                         source="model-prose")
+                self.state.guesses += 1
                 gf = GroundedFlag(flag=claimed, raw=claimed.encode("utf-8", "replace"),
                                   source="model-prose (ungrounded)", evidence_seq=0)
             else:

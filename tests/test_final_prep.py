@@ -600,3 +600,26 @@ def test_preflight_never_advises_a_cap_below_the_output_floor(monkeypatch):
     monkeypatch.setenv("CTF_MIN_OUTPUT_TOKENS", "4096")
     ok, detail = _speedy(tokens=500, seconds=10, monkeypatch=monkeypatch)     # above that floor: as before
     assert "CTF_MAX_OUTPUT_TOKENS=7168, or raise" in detail
+
+
+def test_no_model_call_is_started_inside_the_reserve(tmp_path):
+    # Pre-freeze live runs: in the last 20 s (the reserve) every request got a
+    # 1 s timeout; ~20 doomed requests, three in a row ending each attempt, and
+    # the ladder climbed to the top rung (string-comparer: 19 of 21 attempts).
+    calls = []
+    model = _Fn(lambda n, m, t: calls.append(n) or _say(n, f"found {REAL}"))
+    log = RunLog(tmp_path / "logs")
+    state = new_state("c", tmp_path, ToolContext("c", tmp_path, LocalExecutor()), "sys", "go")
+    solver = Solver(model=model, profile=ToolProfile("t", [_Out()]), state=state,
+                    budget=Budget(Caps(total_seconds=24)), log=log,
+                    submitter=FlagSubmitter(_Grader(), log, sleep=lambda s: None, retry_delays=()),
+                    plan_first=True, limits=Limits(reserve_seconds=20))
+    out = solver.run()
+    assert out.outcome == Outcome.EXHAUSTED and calls == []        # not even the plan
+    assert "reserve" in out.reason
+    # With time to spare the same setup calls the model and solves.
+    calls.clear()
+    tmp2 = tmp_path / "b"; tmp2.mkdir()
+    s2, _ = _solver(_Fn(lambda n, m, t: calls.append(n) or _say(n, f"found {REAL}")), tmp2,
+                    caps=Caps(total_seconds=600))
+    assert s2.run().outcome == Outcome.SOLVED and calls

@@ -217,7 +217,8 @@ def test_timeout_kills_the_whole_process_group(tmp_path):
 
 def test_wall_clock_is_charged_so_per_challenge_seconds_works():
     solver, _, _, _ = _solver(_Fn(lambda n, m: _call(n, text=f"t{n}", sleep=0.25)),
-                              caps=Caps(per_challenge_seconds=0.6), max_iterations=50)
+                              caps=Caps(per_challenge_seconds=0.6), max_iterations=50,
+                              limits=Limits(reserve_seconds=0))   # all of 0.6 s is inside a 20 s reserve
     out = solver.run()
     assert out.outcome == Outcome.EXHAUSTED and out.iterations <= 4
     assert solver.budget.snapshot()["per_challenge"]["c"]["seconds"] >= 0.5

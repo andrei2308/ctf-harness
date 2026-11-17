@@ -54,6 +54,8 @@ MAX_PROSE_TURNS = 2
 # time out again. The model is told, the output cap comes down, and after this
 # many in a row the attempt ends as an error.
 MAX_TIMEOUTS_IN_A_ROW = 3
+# Below this much time (after the reserve) no model request is started.
+MIN_MODEL_CALL_SECONDS = 5.0
 TIMEOUT_CAP_FLOOR = 8192     # a timeout never lowers the output cap below this
 _TIMEOUT_NOTE = ("Your last reply took too long and was cut off before anything "
                  "arrived. Do not think it all through at once: reply now with a "
@@ -420,6 +422,23 @@ class Solver:
         self.log.event("solver.time_note", challenge=self.state.challenge_id,
                        seconds_left=round(left))
 
+    def _in_reserve(self) -> bool:
+        """Only the reserve (kept for a last submit and the log) is left: a
+        model request would get a 1 s timeout and fail. In the pre-freeze runs
+        the last 20 s of every challenge became ~20 such requests, each three
+        in a row ending an attempt, and the ladder climbed to the top rung
+        (string-comparer: 19 of 21 attempts started there)."""
+        left = self._tool_time_left()
+        return (left is not None and self.limits.reserve_seconds > 0
+                and left < MIN_MODEL_CALL_SECONDS)
+
+    def _end_in_reserve(self) -> "SolveOutcome":
+        cid = self.state.challenge_id
+        why = "time left is the reserve: no model call can finish"
+        self.log.attempt_end(cid, Outcome.EXHAUSTED.value, why)
+        return SolveOutcome(Outcome.EXHAUSTED, cid, why,
+                            bool(self.state.store.grounded_flags()), self.state.iters_done)
+
     def _tool_time_left(self) -> float | None:
         left = self.budget.time_left(self.state.challenge_id)
         return None if left is None else max(0.0, left - self.limits.reserve_seconds)
@@ -465,6 +484,9 @@ class Solver:
             return SolveOutcome(Outcome.SOLVED, cid, "already solved", True,
                                 self.state.iters_done)
 
+        if self._in_reserve():
+            return self._end_in_reserve()
+
         if self.plan_first and not self.state.planned:
             self._plan()
 
@@ -500,6 +522,9 @@ class Solver:
                     self.log.attempt_end(cid, Outcome.SOLVED.value, "flag accepted")
                     return SolveOutcome(Outcome.SOLVED, cid, "flag accepted",
                                         True, self.state.iters_done)
+
+            if self._in_reserve():
+                return self._end_in_reserve()
 
             # Stuck-loop detection: assess after real turns. Nudge once, then bail
             # to STALLED so the scheduler escalates a rung instead of spinning.

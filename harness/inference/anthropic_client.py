@@ -15,7 +15,7 @@ from __future__ import annotations
 import os
 
 from .base import (ContextOverflow, Effort, Message, Model, ModelError,
-                   ModelResponse, ModelSpec, ToolCall, Usage)
+                   ModelResponse, ModelSpec, ModelTimeout, ToolCall, Usage, is_timeout)
 
 # Rough thinking-token budget per effort rung. Tuned once real limits are known.
 _THINK_BUDGET = {Effort.LOW: 0, Effort.MEDIUM: 4000, Effort.HIGH: 12000, Effort.MAX: 32000}
@@ -112,6 +112,8 @@ class AnthropicModel(Model):
             msg = str(e).lower()
             if "context" in msg and ("long" in msg or "exceed" in msg or "maximum" in msg):
                 raise ContextOverflow(str(e)) from e
+            if is_timeout(e):
+                raise ModelTimeout(str(e)) from e
             raise ModelError(str(e)) from e
 
         text_parts: list[str] = []

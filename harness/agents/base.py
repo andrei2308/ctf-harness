@@ -27,7 +27,7 @@ from ..secrets import scrub, scrub_text
 from ..flags.grounding import (EvidenceStore, GroundedFlag, flag_pattern,
                                verify_candidate)
 from ..flags.submit import FlagSubmitter, _preview
-from ..inference.base import (ContextOverflow, Message, Model, ModelError)
+from ..inference.base import (ContextOverflow, Message, Model, ModelError, ModelTimeout)
 from ..scheduler.budget import Budget, BudgetExceeded
 from ..telemetry.run_log import RunLog
 from .limits import Limits
@@ -47,6 +47,18 @@ RATE_LIMIT_DELAYS = (15.0, 30.0, 60.0, 60.0, 60.0, 60.0)
 # Consecutive turns with no tool call (and no accepted flag) before the attempt
 # counts as stalled. Each one gets a nudge to act first.
 MAX_PROSE_TURNS = 2
+# A model call that outlasts its time limit returns nothing and is not retried
+# as it was: in rehearsal 20 such calls cost about 6,000 s, and one pwn run lost
+# over half its time to 8 of them. The usual cause is the reply itself (a long
+# chain of reasoning at a 16K or 32K output cap), so the same request tends to
+# time out again. The model is told, the output cap comes down, and after this
+# many in a row the attempt ends as an error.
+MAX_TIMEOUTS_IN_A_ROW = 3
+TIMEOUT_CAP_FLOOR = 8192     # a timeout never lowers the output cap below this
+_TIMEOUT_NOTE = ("Your last reply took too long and was cut off before anything "
+                 "arrived. Do not think it all through at once: reply now with a "
+                 "short plan of at most three lines and one tool call (or several "
+                 "independent ones), then continue from the result.")
 _sleep = time.sleep          # indirection so tests can skip real waits
 # Explicit answers (submit_flag) per challenge: few when a wrong one costs.
 # Ungrounded guesses per challenge when wrong flags are free (CTF_MAX_GUESSES).
@@ -93,6 +105,9 @@ class SolverState:
     # Output cap learned the hard way (see Solver._raise_output_cap); carried
     # across attempts so a later rung does not start below it.
     output_floor: int = 0
+    # Output cap learned from timeouts (0 = none): no rung goes above it and
+    # the cut-off raise stops at it.
+    output_ceiling: int = 0
     notes: list[str] = field(default_factory=list)
     planned: bool = False          # a planning step has run for this challenge
     answer_submits: int = 0        # explicit submit_flag calls that reached the grader
@@ -142,6 +157,8 @@ class Solver:
         state.ctx.time_left = self._tool_time_left
         if state.output_floor > model.spec.max_tokens:
             model.spec = replace(model.spec, max_tokens=state.output_floor)
+        if state.output_ceiling and model.spec.max_tokens > state.output_ceiling:
+            model.spec = replace(model.spec, max_tokens=state.output_ceiling)
         self.model = model
         self.profile = profile
         self.state = state
@@ -339,11 +356,31 @@ class Solver:
         burn a whole rung at 4096 tokens a turn and never act."""
         cur = self.model.spec.max_tokens
         new = min(self.limits.max_output_tokens, cur * 2)
+        if self.state.output_ceiling:
+            new = min(new, self.state.output_ceiling)
         if new > cur:
             self.model.spec = replace(self.model.spec, max_tokens=new)
             self.state.output_floor = new
             self.log.event("solver.output_cap_raised", challenge=self.state.challenge_id,
                            was=cur, now=new)
+
+    def _after_timeout(self, error: str) -> None:
+        """A model call timed out. Halve the output cap (not below
+        TIMEOUT_CAP_FLOOR, and never raising a cap that is already lower) so a
+        runaway reply ends inside the time limit next time, and tell the model
+        once. The caller decides when enough in a row is an error."""
+        cid = self.state.challenge_id
+        cur = self.model.spec.max_tokens
+        new = max(TIMEOUT_CAP_FLOOR, cur // 2) if cur > TIMEOUT_CAP_FLOOR else cur
+        self.state.output_ceiling = new
+        self.state.output_floor = min(self.state.output_floor, new)
+        if new < cur:
+            self.model.spec = replace(self.model.spec, max_tokens=new)
+        self.log.event("solver.model_timeout", challenge=cid, error=error[:200],
+                       output_cap_was=cur, output_cap_now=new)
+        last = self.state.messages[-1]
+        if not (last.role == "user" and last.content == _TIMEOUT_NOTE):
+            self.state.messages.append(Message(role="user", content=_TIMEOUT_NOTE))
 
     def _save_output(self, data: bytes) -> str | None:
         """Keep an oversized tool output on disk so the model can search it."""
@@ -436,6 +473,7 @@ class Solver:
         # depth, while state.iters_done keeps the challenge's running total.
         iters = 0
         prose_turns = 0
+        timeouts = 0
 
         while iters < self.max_iterations:
             # Hard caps: per-challenge cutoff and global pool.
@@ -498,9 +536,19 @@ class Solver:
             t0 = time.monotonic()
             try:
                 resp = self._call_model()
+                timeouts = 0
             except ContextOverflow:
                 self._compact()
                 continue
+            except ModelTimeout as e:
+                timeouts += 1
+                self._after_timeout(str(e))
+                if timeouts < MAX_TIMEOUTS_IN_A_ROW:
+                    continue
+                self.state.note(f"model timed out {timeouts} times in a row")
+                self.log.attempt_end(cid, Outcome.ERROR.value, f"model error: {e}")
+                return SolveOutcome(Outcome.ERROR, cid, f"model error: {e}",
+                                    grounded_any, self.state.iters_done)
             except ModelError as e:
                 self.state.note(f"model error: {e}")
                 self.log.attempt_end(cid, Outcome.ERROR.value, f"model error: {e}")
@@ -598,8 +646,8 @@ class Solver:
             self._cap_request()
             try:
                 return self.model.complete(self.state.messages, self.profile.schemas())
-            except ContextOverflow:
-                raise
+            except (ContextOverflow, ModelTimeout):
+                raise                      # the caller compacts, or changes the request
             except ModelError as e:
                 text = str(e).lower()
                 delays = (RATE_LIMIT_DELAYS if "429" in text or "rate limit" in text

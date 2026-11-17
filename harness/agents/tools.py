@@ -308,6 +308,9 @@ def scope_violation(cmd: str, conn: "ConnInfo | None") -> str | None:
 _BG_SCANNER = re.compile(r"\b(ffuf|feroxbuster|gobuster|dirsearch|dirb|wfuzz|nikto|sqlmap|hydra)\b")
 
 
+_QUOTED = re.compile(r"'[^']*'|\"(?:\\.|[^\"\\])*\"")
+
+
 def background_scan(cmd: str) -> str | None:
     """A scanner sent to the background escapes every time limit and keeps
     loading the target after the tool call returns. In rehearsal
@@ -316,8 +319,12 @@ def background_scan(cmd: str) -> str | None:
     run in the foreground, where the tool timeout applies."""
     if not _BG_SCANNER.search(cmd):
         return None
+    # An '&' inside quotes is data, not shell: `ffuf -u 'http://h/?a=FUZZ&b=1'`,
+    # `hydra ... http-post-form "/login:user=^USER^&pass=^PASS^:F=bad"`. Without
+    # this every hydra form attack and most multi-parameter fuzzing was refused.
+    bare = _QUOTED.sub("Q", cmd)
     # A lone '&' (not '&&', '2>&1', '&>' or '|&') sends the job to the background.
-    backgrounded = bool(re.search(r"\bnohup\b|\bsetsid\b|(?<![&>|<0-9])&(?![&>])", cmd))
+    backgrounded = bool(re.search(r"\bnohup\b|\bsetsid\b|(?<![&>|<0-9])&(?![&>])", bare))
     return "a scanner sent to the background" if backgrounded else None
 
 

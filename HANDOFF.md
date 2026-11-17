@@ -230,6 +230,7 @@ entry) and is read from there at run time.
 | Time limit per run | `CTF_TOTAL_SECONDS`, a little under it | Tool timeouts are clamped to the time left; without it nothing is |
 | Token limit per run | `CTF_TOTAL_TOKENS` | Stops cleanly instead of being cut off |
 | Model's max output tokens / context size | `CTF_MAX_OUTPUT_TOKENS` | Upper rungs ask for 16K and 32K; a smaller model rejects that outright |
+| Preflight check 8 warns that a full reply cannot fit the request limit | `CTF_MAX_OUTPUT_TOKENS` to the value it prints | A reply that outlasts `CTF_MODEL_TIMEOUT` returns nothing; 20 such calls cost about 6,000 s in rehearsal. The solver also halves the cap after a timeout, down to 8192 |
 | The model is a reasoning model (preflight check 6 says so) | `CTF_MIN_OUTPUT_TOKENS=8192` or more | Hidden reasoning counts against `max_tokens`; rung 0's 4096 can be spent before it acts |
 | Small context window | `CTF_HISTORY_SOFT_CHARS`, `CTF_HISTORY_HARD_CHARS` | Defaults (40K / 160K chars) assume roughly 64K tokens or more |
 | Flag format | `CTF_FLAG_REGEX` | Default handles `CTF{..}` and prefixed forms like `DCTF{..}` only |

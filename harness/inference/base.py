@@ -133,6 +133,18 @@ class ContextOverflow(ModelError):
     """The request exceeded the model's context window; caller should compact."""
 
 
+class ModelTimeout(ModelError):
+    """The request ran past its time limit and returned nothing. Unlike a 5xx
+    this is usually the model itself (a reply long enough to outlast the limit),
+    so sending the same request again tends to time out again."""
+
+
+def is_timeout(exc: BaseException) -> bool:
+    name = type(exc).__name__.lower()
+    text = str(exc).lower()
+    return "timeout" in name or "timed out" in text or "timeout" in text
+
+
 class Model(abc.ABC):
     """A resolved, callable model at a fixed spec."""
 

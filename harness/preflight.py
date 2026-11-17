@@ -124,11 +124,13 @@ def run(config: Config, model_factory=None) -> list[tuple[str, bool, str]]:
     def room_to_act():
         # A task that invites some thinking, at rung 0's output cap. A reasoning
         # model that spends the cap on hidden thought returns nothing here.
+        t0 = time.monotonic()
         r = base.complete([sys_msg, Message("user", (
             "You are starting a reverse-engineering CTF challenge. The working "
             "directory holds `chall` (unknown type) and `output.txt`. Think about "
             "what you need to learn first, then call the shell tool with the ONE "
             "command that tells you the most."))], _TOOL)
+        state["gen"] = (r.usage.output, time.monotonic() - t0)
         cap = ladder.rung(0).spec.max_tokens
         note = (f"; reasoning model ({r.reasoning_tokens} hidden tokens of {r.usage.output} "
                 f"output, cap {cap})" if r.reasoning_tokens else "")
@@ -142,6 +144,28 @@ def run(config: Config, model_factory=None) -> list[tuple[str, bool, str]]:
             f"({ladder.rung(0).spec.max_tokens})", room_to_act,
             "set CTF_MIN_OUTPUT_TOKENS=8192 or higher; the solver also doubles the "
             "cap after a cut-off turn, but each one wastes a full turn of tokens")
+
+    def reply_fits():
+        # A reply that outlasts the request time limit returns NOTHING. In
+        # rehearsal 20 such calls cost about 6,000 s; the upper rungs allow 16K
+        # and 32K output tokens, which a slow model cannot produce in time.
+        tokens, secs = state.get("gen", (0, 0.0))
+        if tokens < 50 or secs <= 0:
+            return "too little output to estimate the model's speed"
+        speed = tokens / secs
+        limit = float(os.environ.get("CTF_MODEL_TIMEOUT") or 300)
+        top = max(r.spec.max_tokens for r in ladder.rungs)
+        if top / speed <= 0.8 * limit:
+            return (f"about {speed:.0f} output tokens/s: a full {top}-token reply takes "
+                    f"about {top / speed:.0f} s, inside the {limit:.0f} s request limit")
+        fits = max(2048, int(0.8 * speed * limit) // 1024 * 1024)
+        raise ModelError(
+            f"about {speed:.0f} output tokens/s: a full {top}-token reply would take about "
+            f"{top / speed:.0f} s, past the {limit:.0f} s request limit (CTF_MODEL_TIMEOUT), "
+            f"and return nothing  -> set CTF_MAX_OUTPUT_TOKENS={fits}, or raise the limit. "
+            "The estimate comes from one reply; treat it as rough")
+
+    attempt("8. a full-length reply fits inside the request time limit", reply_fits)
 
     def sees_images():
         # A 64x64 solid red square. An adapter that learns the model rejects
@@ -194,9 +218,9 @@ def main(argv: list[str] | None = None) -> int:
     results = run(config)
     for name, ok, detail in results:
         print(f"  [{'PASS' if ok else 'FAIL'}] {name}\n         {detail}")
-    # Usage reporting and vision are warnings; everything else must pass for a
+    # Usage reporting, vision and reply length are warnings; everything else must pass for a
     # run to work.
-    blocking = [r for r in results if not r[1] and not r[0].startswith(("2.", "7."))]
+    blocking = [r for r in results if not r[1] and not r[0].startswith(("2.", "7.", "8."))]
     print("\n" + ("Ready: a run can start." if not blocking
                   else f"NOT ready: {len(blocking)} check(s) failed."))
     return 1 if blocking else 0

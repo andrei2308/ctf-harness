@@ -13,7 +13,7 @@ import json
 import os
 
 from .base import (ContextOverflow, Effort, Message, Model, ModelError,
-                   ModelResponse, ModelSpec, ToolCall, Usage)
+                   ModelResponse, ModelSpec, ModelTimeout, ToolCall, Usage, is_timeout)
 
 # Some backends accept a reasoning_effort string; map our rung onto it. Harmless
 # on backends that ignore unknown fields (we drop it if the call rejects it).
@@ -173,6 +173,8 @@ class OpenAIModel(Model):
                 return self.complete(messages, tools)
             if is_context_overflow(str(e)):
                 raise ContextOverflow(str(e)) from e
+            if is_timeout(e):
+                raise ModelTimeout(str(e)) from e
             raise ModelError(str(e)) from e
 
         choice = resp.choices[0]

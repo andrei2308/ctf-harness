@@ -1,5 +1,8 @@
 # Final preparation before the freeze: instructions for Claude Code
 
+> **Completed 2026-11-17.** Results are in `FINAL_REPORT.md`. A short follow-up
+> is in `CLAUDE_CODE_PREFREEZE.md`. Kept for reference.
+
 You are on Andrei's Kali machine, in the `ctf-harness` repo, on branch
 `contest-readiness`. The contest is on 19 and 20 November. This is the last
 round of work: verify the changes made after your rehearsal report, add the

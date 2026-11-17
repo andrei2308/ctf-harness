@@ -457,3 +457,126 @@ def test_fresh_context_setting(monkeypatch):
     assert config_from_env().fresh_context_on_escalate is False
     monkeypatch.setenv("CTF_FRESH_CONTEXT", "1")
     assert config_from_env().fresh_context_on_escalate is True
+
+
+# --- after the final report: scanner guard, timeouts, reply length ------------------
+
+@pytest.mark.parametrize("cmd", [
+    "ffuf -u 'http://h/?a=FUZZ&b=2' -w w.txt -t 10",
+    'hydra -l admin -P p.txt h http-post-form "/login:user=^USER^&pass=^PASS^:F=bad"',
+    'wfuzz -d "a=FUZZ&b=1" http://h/',
+    'sqlmap -u "http://h/page?id=1&cat=2" --batch',
+    "ffuf -u http://h/FUZZ -w w.txt 2>&1 | head",
+    "gobuster dir -u http://h -w w && echo done",
+])
+def test_an_ampersand_inside_quotes_is_not_a_background_job(cmd):
+    from harness.agents.tools import background_scan
+    assert background_scan(cmd) is None
+
+
+@pytest.mark.parametrize("cmd", [
+    "nohup ffuf -u http://h/FUZZ -w w.txt &",
+    "ffuf -u 'http://h/?a=FUZZ&b=1' -w w.txt > out.txt 2>&1 &",
+    "(sqlmap -u http://h/?id=1 --batch &) ; sleep 5",
+])
+def test_a_backgrounded_scanner_is_still_refused(cmd):
+    from harness.agents.tools import background_scan
+    assert background_scan(cmd)
+
+
+def _timeout_model(pattern, spec):
+    """pattern: 'T' = time out, anything else = solve. Records the cap of each call."""
+    from harness.inference.base import ModelTimeout
+    caps = []
+    def fn(n, messages, tools):
+        caps.append((spec_holder[0].spec.max_tokens, messages[-1].content[:30]))
+        if n <= len(pattern) and pattern[n - 1] == "T":
+            raise ModelTimeout("Request timed out.")
+        return _say(n, f"found {REAL}")
+    spec_holder = [_Fn(fn, spec)]
+    return spec_holder[0], caps
+
+
+def test_a_timed_out_call_is_not_retried_as_it_was(tmp_path, monkeypatch):
+    import harness.agents.base as base
+    slept = []
+    monkeypatch.setattr(base, "_sleep", slept.append)
+    model, caps = _timeout_model("TT", ModelSpec(name="m", max_tokens=32768))
+    solver, state = _solver(model, tmp_path)
+    assert solver.run().outcome == Outcome.SOLVED
+    # the cap comes down each time, never below the floor, and nothing sleeps
+    assert [c for c, _ in caps] == [32768, 16384, 8192] and slept == []
+    notes = [m.content for m in state.messages if m.role == "user" and "took too long" in m.content]
+    assert len(notes) == 1                             # told once, not once per timeout
+    assert caps[1][1].startswith("Your last reply took too long")
+    assert state.output_ceiling == 8192
+    kinds = [json.loads(l)["kind"] for l in solver.log.path.read_text().splitlines()]
+    assert kinds.count("solver.model_timeout") == 2
+
+
+def test_three_timeouts_in_a_row_end_the_attempt_and_the_cap_carries_over(tmp_path):
+    model, caps = _timeout_model("TTTT", ModelSpec(name="m", max_tokens=16384))
+    solver, state = _solver(model, tmp_path)
+    out = solver.run()
+    assert out.outcome == Outcome.ERROR and model.n == 3
+    # the next rung asks for 32768; it starts at the learned ceiling instead
+    nxt = _Fn(lambda n, m, t: _say(n, f"found {REAL}"), ModelSpec(name="m", max_tokens=32768))
+    Solver(model=nxt, profile=ToolProfile("t", [_Out()]), state=state, budget=Budget(Caps()),
+           log=solver.log, submitter=solver.submitter, plan_first=False, limits=Limits())
+    assert nxt.spec.max_tokens == 8192
+
+
+def test_a_timeout_never_raises_a_low_cap_and_bounds_the_cut_off_raise(tmp_path):
+    from harness.inference.base import ModelTimeout
+    def fn(n, messages, tools):
+        if n == 1:
+            raise ModelTimeout("Request timed out.")
+        if n == 2:
+            return ModelResponse(text="", stop_reason="length")
+        return _say(n, f"found {REAL}")
+    model = _Fn(fn, ModelSpec(name="m", max_tokens=4096))
+    solver, state = _solver(model, tmp_path)
+    assert solver.run().outcome == Outcome.SOLVED
+    assert state.output_ceiling == 4096 and model.spec.max_tokens == 4096   # no doubling past it
+
+
+def test_adapters_name_a_timeout(monkeypatch):
+    from types import SimpleNamespace
+    from harness.inference.base import ModelTimeout, is_timeout
+    from harness.inference.openai_client import OpenAIModel
+    class APITimeoutError(Exception):
+        pass
+    def create(**kw):
+        raise APITimeoutError("Request timed out.")
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    with pytest.raises(ModelTimeout):
+        OpenAIModel(SPEC, client=client).complete([Message("user", "x")])
+    assert is_timeout(TimeoutError("x")) and not is_timeout(RuntimeError("429 rate limit"))
+
+
+def _speedy(tokens, seconds, monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(preflight.time, "monotonic", lambda: clock[0])
+    def fn(n, messages, tools):
+        if messages[-1].images:
+            return ModelResponse(text="red", usage=Usage(5, 5))
+        if "reverse-engineering" in messages[-1].content:
+            clock[0] += seconds
+            return ModelResponse(tool_calls=(ToolCall("t", "shell", {"cmd": "file chall"}),),
+                                 usage=Usage(50, tokens))
+        if tools and not any(m.role == "tool" for m in messages):
+            return ModelResponse(tool_calls=(ToolCall("t", "shell", {"cmd": "echo preflight"}),),
+                                 usage=Usage(20, 5))
+        return ModelResponse(text="ready", usage=Usage(20, 2))
+    res = preflight.run(Config(inference_backend="openai"), lambda s: _Fn(fn, s))
+    return [(ok, d) for n, ok, d in res if n.startswith("8.")][0]
+
+
+def test_preflight_warns_when_a_full_reply_cannot_fit_the_request_limit(monkeypatch):
+    monkeypatch.setenv("CTF_MODEL_TIMEOUT", "180")
+    ok, detail = _speedy(tokens=500, seconds=10, monkeypatch=monkeypatch)     # 50 tokens/s
+    assert not ok and "CTF_MAX_OUTPUT_TOKENS=7168" in detail and "655 s" in detail
+    ok, detail = _speedy(tokens=5000, seconds=10, monkeypatch=monkeypatch)    # 500 tokens/s
+    assert ok and "inside the 180 s" in detail
+    ok, detail = _speedy(tokens=10, seconds=1, monkeypatch=monkeypatch)
+    assert ok and "too little output" in detail

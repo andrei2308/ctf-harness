@@ -152,14 +152,28 @@ docker run --rm -e OPENAI_API_KEY -e OPENAI_BASE_URL -e CTF_FAST_MODEL ctf-harne
 ```
 
 `glm-5.3-flash` is a reasoning model: hidden reasoning counts against
-`max_tokens`, and at rung 0 (4096) some turns return nothing. See Known gaps.
+`max_tokens`. Use `CTF_MIN_OUTPUT_TOKENS=8192` (see `REHEARSAL_REPORT.md`).
 
-CyberEDU (about 800 practice challenges) is reachable through the official MCP
-server, cloned and set up outside this repo at `~/Desktop/cyberedu-mcp` (own
-venv, `mcp<2` pinned: the server does not run on the 2.x SDK) and registered
-in Claude Code at user scope as `cyberedu`. The session cookie lives only in
-`~/.claude.json`. The harness's own adapter for it does not work yet; see
-Known gaps.
+### Rehearsing on real CyberEDU challenges
+
+The harness's CyberEDU adapter (`CTF_PLATFORM=cyberedu`) works against the
+official MCP server; it was used for 23 rehearsal runs (`REHEARSAL_REPORT.md`).
+The server lives only in the rehearsal image, which is **never uploaded**:
+
+```bash
+docker build -f Dockerfile.contest   -t ctf-harness:latest .
+docker build -f Dockerfile.rehearsal -t ctf-harness:rehearsal .
+# cookie and model key by NAME only; NET_ADMIN for the egress firewall
+docker run --rm --cap-add NET_ADMIN \
+  -e CYBEREDU_SESSION_COOKIE -e OPENAI_API_KEY -e OPENAI_BASE_URL -e CTF_FAST_MODEL \
+  -e CTF_TOTAL_SECONDS=1200 -e CTF_PENALIZE_WRONG=1 -e CTF_MIN_OUTPUT_TOKENS=8192 \
+  ctf-harness:rehearsal --challenge <challenge-id>
+```
+
+The run scripts used (one run per fresh, empty log directory; a token ledger)
+are in `~/Desktop/ctf-rehearsal/`, outside the repo, because the challenges
+are CyberEDU's. The cookie lives only in `~/.claude.json` (the `cyberedu` MCP
+entry) and is read from there at run time.
 
 ## Set these once the limits are announced
 
@@ -226,20 +240,19 @@ Two things to know:
   message looks like progress. Repeated identical commands are caught.
 - **`HttpTool` keeps no cookies** between calls. The agent can use `curl` with a
   cookie jar from `shell`.
-- **Prompts and ladder depths are untuned.** They have met one real model
-  (GLM 5.3 Flash) on the three toy fixtures only.
+- **Prompts and ladder depths** have met one real model (GLM 5.3 Flash) on 13
+  real CyberEDU challenges (9 solved). Ladder depth never bound; the 1200 s
+  time limit did. Clean-context restarts never triggered, so they are
+  untested in practice.
 - **Rung 0's 4096 output tokens is small for a reasoning model.** Set
   `CTF_MIN_OUTPUT_TOKENS` to raise every rung's floor. Without it the solver
   still recovers: a turn cut off with nothing produced doubles the cap for the
   rest of the challenge, at the cost of that one wasted turn. Preflight check 6
   reports whether the model reasons and whether it gets cut off.
-- **`harness/platforms/cyberedu_mcp.py` does not match the real server.** Its
-  tool names lack the `cyberedu_` prefix, it sends `contest_id` where the
-  server wants `contest_slug`, it calls a `get_contest_challenges` that does
-  not exist, it never sends the `flag_id` that submission needs, and it
-  passes the cookie as `CYBEREDU_SESSION` while the server reads
-  `CYBEREDU_SESSION_COOKIE`. It also covers contests only, not the practice
-  catalogue.
+- **CyberEDU contest mode is unverified.** The adapter's practice-catalogue
+  mode is checked live; its contest mode (`CTF_CONTEST_ID` = slug) is written
+  from the server source and has not met a live contest. The server cannot
+  stop an instance; instances end after CyberEDU's 60 minutes.
 - **Toy flags ship in the image** (`/opt/ctf-harness/tests`, `fixtures`). They
   are now collected at start-up and never submitted (`harness/flags/decoys.py`),
   except with the fixtures rig, where they are the answers. Flags in your notes
@@ -249,10 +262,17 @@ Two things to know:
   challenge. For any rehearsal suite, run `python scripts/hash_flags.py <suite>`
   so it holds only SHA-256 hashes. The bundled `fixtures/` stay plaintext for
   the tests, so results on them prove plumbing only.
-- **The agent can read the harness's environment** through `/proc`, because its
-  shell runs as the same user. The model key is therefore reachable by a model
-  that goes looking. Running the agent's shell as a separate user would close
-  this; not done.
+- **The agent runs as the same user as the harness.** Mitigated, not closed:
+  known secret values are scrubbed from every tool result, and under the
+  rehearsal lockdown the agent's commands lose NET_ADMIN/NET_RAW (which also
+  makes `/proc/<harness>/environ` unreadable to them) and may reach only their
+  target. A stuck agent did go looking for the cookie twice in rehearsal; the
+  boundaries held. A separate user for the agent's shell would close it.
+- **gdb cannot disable ASLR** under Docker's default seccomp profile
+  (`personality` is blocked); addresses differ from run to run under gdb.
+- **Image tools missing** that rehearsal runs wanted: a PHP interpreter, an
+  ssh client with `sshpass`, Wine. Adding them is a tool-layer rebuild plus a
+  new `:base` and backup; Andrei's decision.
 - **Unpinned downloads:** RsaCtfTool, jwt_tool and the Foundry installer
   follow upstream HEAD. The base image is pinned by digest; bump it
   deliberately, never on contest day (a new base invalidates every cached

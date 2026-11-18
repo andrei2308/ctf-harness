@@ -132,6 +132,21 @@ def test_a_tier_names_the_missing_tools_of_this_playbook_only(monkeypatch, tmp_p
     assert prompt.index("Installed tools detected here") < prompt.index("Not installed in this image")
 
 
+def test_a_tier_without_jadx_says_so_to_every_specialist(monkeypatch):
+    # An APK can come out of a pcap or a disk image, in any category.
+    monkeypatch.setenv("CTF_IMAGE_TIER", "core")
+    no_java = CORE - {"jadx", "apktool", "d2j-dex2jar", "apksigner"}
+    assert "jadx" not in ForensicsSpecialist().system_prompt().lower()
+    for spec in (ForensicsSpecialist(), RevSpecialist(), CryptoSpecialist()):
+        note = missing_note(no_java, spec.system_prompt())
+        assert "jadx (for an APK: unzip it and disassemble classes.dex with `r2" in note
+    # With jadx installed (medium) nothing is said about it.
+    assert "jadx" not in missing_note(CORE, ForensicsSpecialist().system_prompt())
+    # And never in the full image.
+    monkeypatch.delenv("CTF_IMAGE_TIER")
+    assert missing_note(no_java, ForensicsSpecialist().system_prompt()) == ""
+
+
 def test_a_tier_with_everything_installed_says_nothing(monkeypatch):
     monkeypatch.setenv("CTF_IMAGE_TIER", "medium")
     for spec in (RevSpecialist(), CryptoSpecialist(), ForensicsSpecialist()):

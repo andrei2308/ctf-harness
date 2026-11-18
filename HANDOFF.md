@@ -135,9 +135,14 @@ docker run --rm ctf-harness:latest python scripts/check_image.py --strict
   the tools its playbook mentions that are not installed, with what to use
   instead, and `ghidra_decompile` is not offered when Ghidra is absent. In the
   full image nothing changes.
-- **Only the full image has been rehearsed against a real model.** A smaller
-  tier is the fallback for a size limit, not an optimisation: without a limit,
-  upload the full one.
+- **Only the full image has been rehearsed against a real model** (core has run
+  the offline suite once, with the same result). A smaller tier is the fallback
+  for a size limit, not an optimisation: without a limit, upload the full one.
+- **A slow upload counts as a limit.** If every upload sends the whole image,
+  that is 5.75 GB, 2.65 GB or 0.93 GB each time, and you may upload more than
+  once during the contest. Time the first upload. If a second one of that size
+  would not fit in the time you have, switch to medium: of everything the
+  rehearsals used it lacks only SageMath.
 - **Below the core tier:** `--build-arg WITH_ANGR=0` on `Dockerfile.slim` saves
   about 290 MB more (and `check_image.py` then reports `angr imports` as its
   one critical failure). After that, remove packages from

@@ -147,17 +147,26 @@ _STAND_INS = {
     "hashcat": "use `john`",
     "yafu": "factor with `gp -q` or `sympy.factorint`",
     "qemu": "a foreign-architecture binary cannot be run here: analyse it statically",
-    "jadx": "unzip the APK; `strings` and `r2` on classes.dex",
+    "jadx": "for an APK: unzip it and disassemble classes.dex with `r2 -q -A`, "
+            "which reads Dalvik: `afl`, then `pdf @ <method>`",
     "forge": "use `web3` and `solc` from Python",
     "tesseract": "look at pictures with `view_image`",
     "hydra": "script the login loop in Python",
 }
 
 
+# Told to every specialist of a tier that lacks them, named by its playbook or
+# not: the file that needs the tool can turn up in any category. Measured on the
+# core tier (TIERS_REPORT.md): an APK carved out of a pcap went to the forensics
+# specialist, whose playbook does not name jadx, and the model spent 25 turns
+# writing a DEX parser before a second run found r2.
+_ANY_CATEGORY = ("jadx",)
+
+
 def missing_note(available: set[str], playbook: str) -> str:
     """One line for the task prompt of a smaller image tier: the tools this
-    specialist's playbook names that are not installed, with a stand-in where
-    there is one. Without it the model spends a turn on `sage: command not
+    specialist's playbook names that are not installed (and the few in
+    _ANY_CATEGORY), with a stand-in where there is one. Without it the model spends a turn on `sage: command not
     found` and another deciding what to do instead.
 
     Empty in the full image (so its prompts are exactly the rehearsed ones) and
@@ -171,7 +180,7 @@ def missing_note(available: set[str], playbook: str) -> str:
         name = _PLAYBOOK_NAMES.get(probe, probe)
         if probe in available or name in available or name in missing:
             continue
-        if re.search(r"(?<![a-z0-9_])" + re.escape(name.lower()), text):
+        if name in _ANY_CATEGORY or re.search(r"(?<![a-z0-9_])" + re.escape(name.lower()), text):
             missing[name] = _STAND_INS.get(name, "")
     if not missing:
         return ""

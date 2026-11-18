@@ -245,3 +245,25 @@ def test_tool_usage_knows_what_a_tier_lists():
     assert not mod.in_tier("ghidra", core) and mod.in_tier("ghidra", medium)
     assert not mod.in_tier("forge", core) and mod.in_tier("forge", medium)
     assert not mod.in_tier("hashcat", medium)
+
+
+def test_an_image_check_fails_when_its_program_is_absent(tmp_path):
+    """A pipeline's status is its LAST command's: `tesseract --version | head -1`
+    passed in the core tier, which has no tesseract. With only the shell's
+    plumbing on PATH (no tool at all), no check that runs a program may pass."""
+    import shutil
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    for prog in ("head", "grep", "cat", "sh", "bash", "printf", "echo", "test"):
+        real = shutil.which(prog)
+        if real:
+            (bin_ / prog).symlink_to(real)
+    passed = []
+    for label, cmd, _ in _check_image().CHECKS:
+        if cmd.startswith(("/", "test ")):
+            continue                    # names its program or file by path, not via PATH
+        r = subprocess.run(["/bin/bash", "-c", cmd], cwd=tmp_path, env={"PATH": str(bin_)},
+                           capture_output=True, timeout=60)
+        if r.returncode == 0:
+            passed.append(label)
+    assert passed == []

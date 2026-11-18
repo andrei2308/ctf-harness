@@ -30,7 +30,7 @@
 #   docker run --rm ctf-harness:base-core python scripts/check_image.py --strict
 #   docker build -f Dockerfile.contest --build-arg BASE=ctf-harness:base-core -t ctf-harness:latest .
 #
-# Needs the network (about 15 minutes); build it BEFORE the contest, never at
+# Needs the network (about 20 minutes, measured); build it BEFORE the contest, never at
 # the venue. The contest-day rebuild on top of it needs none.
 FROM kalilinux/kali-rolling@sha256:1ff4a2be3849333687b3ed2b31bb5af0cd1b7c0a11ec7713feb5abe5a6b2795c
 

@@ -1,5 +1,11 @@
 # Smaller image tiers: instructions for Claude Code
 
+> **Completed 2026-11-18.** Results are in `TIERS_REPORT.md`. Both tiers are
+> built, checked in the four sandbox shapes and backed up: core 2.91 GB
+> (0.93 GB compressed), medium 6.62 GB (2.65 GB compressed). Core solved the
+> same 5 of 6 suite challenges as the full image over a pass and a re-run.
+> Not merged. Kept for reference.
+
 You are on Andrei's Kali machine, in the `ctf-harness` repo. `main` (`b4c4f12`)
 is the frozen-ready state and stays the plan. Branch `image-tiers` is one commit
 ahead of it. That commit was written without Docker and without access to the

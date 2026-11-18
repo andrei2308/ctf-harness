@@ -97,9 +97,13 @@ path-exclude=/usr/share/locale/*
 path-include=/usr/share/locale/locale.alias
 EOF
   apt_update
+  # cmake and pkg-config: pinned Python packages without a wheel for this
+  # Python (unicorn 2.1.2) build from source. The full image has both as
+  # dependencies of its other packages.
   apt-get install -y --no-install-recommends \
       python3 python3-pip python3-venv python3-dev build-essential \
       git curl wget unzip ca-certificates xz-utils libcap2-bin \
+      cmake pkg-config \
     || die "core packages failed to install"
   cleanup
 }

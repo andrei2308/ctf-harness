@@ -3,3 +3,4 @@
 # check_image.py prints it.
 sage factors
 hashcat
+qemu-user

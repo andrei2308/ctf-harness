@@ -109,14 +109,15 @@ A change to the tools themselves (a new package) still needs the full
 
 The full image is about 15 GB, 5.75 GB compressed. If the organizers limit the
 size, pick the largest base that fits. The smaller ones are built ahead of time
-from `Dockerfile.slim`; building one takes the network and about 15 minutes, so
-it is not something to start at the venue.
+from `Dockerfile.slim`; building one takes the network and about 20 minutes, so
+it is not something to start at the venue. Both are built and backed up
+(`~/ctf-harness-base-{core,medium}.tar.gz`; measurements in `TIERS_REPORT.md`).
 
 | Base tag | What it is | Size |
 |---|---|---|
 | `ctf-harness:base` | Everything. The image every rehearsal ran on. | 15.09 GB, 5.75 GB compressed |
-| `ctf-harness:base-medium` | Full minus SageMath, most of SecLists, hashcat, duplicates and docs. | not built yet |
-| `ctf-harness:base-core` | Enough for entry and medium challenges in every category. No Sage, Ghidra, Java tools, Foundry, ffmpeg. | not built yet |
+| `ctf-harness:base-medium` | Full minus SageMath, hashcat, qemu-user, commix (1.8 GB with the metasploit it pulls in), 99% of SecLists, duplicates and docs. Every tool the rehearsals used except Sage. | 6.62 GB, 2.65 GB compressed |
+| `ctf-harness:base-core` | Enough for entry and medium challenges in every category. No Sage, Ghidra, Java tools (no APK decompiling), pwndbg, Foundry, ffmpeg, tesseract. Suite: the same 5/6 as the full image over two passes; APKs cost 3x the time without jadx. | 2.91 GB, 0.93 GB compressed |
 
 On the day the only difference is one argument:
 

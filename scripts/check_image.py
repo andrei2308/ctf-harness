@@ -55,7 +55,7 @@ CHECKS: list[tuple[str, str, bool]] = [
     ("web3", "python3 -c 'import web3'", O),
     ("volatility3 module", "python3 -c 'import volatility3'", O),
     # --- rev / pwn ------------------------------------------------------------
-    ("gdb runs", "gdb --batch -ex 'show version' | head -1", C),
+    ("gdb runs", "command -v gdb >/dev/null && gdb --batch -ex 'show version' | head -1", C),
     # The gdb tools run `$CTF_GDB --batch --nx`, so check exactly that.
     ("pwndbg loads (as the gdb tools run it)",
      "pwndbg --batch --nx -ex 'pwndbg' 2>&1 | grep -qi checksec", O),
@@ -67,7 +67,7 @@ CHECKS: list[tuple[str, str, bool]] = [
     ("seccomp-tools", have("seccomp-tools"), O),
     ("pwninit", have("pwninit"), O),
     ("patchelf", "patchelf --version", O),
-    ("radare2", "r2 -v | head -1", O),
+    ("radare2", "command -v r2 >/dev/null && r2 -v | head -1", O),
     ("ghidra headless", have("analyzeHeadless"), O),
     ("qemu-user", "command -v qemu-aarch64-static || command -v qemu-aarch64", O),
     ("ltrace / strace", have("ltrace", "strace"), O),
@@ -79,13 +79,13 @@ CHECKS: list[tuple[str, str, bool]] = [
     # --- forensics / stego ----------------------------------------------------
     ("binwalk", have("binwalk"), C),
     ("exiftool", "exiftool -ver", C),
-    ("tshark", "tshark --version | head -1", C),
+    ("tshark", "command -v tshark >/dev/null && tshark --version | head -1", C),
     ("volatility3 CLI", "command -v vol || command -v vol3 || command -v volatility3", O),
     ("foremost / scalpel", have("foremost", "scalpel"), O),
     ("7z / unrar", "command -v 7z >/dev/null && (command -v unrar || command -v unrar-free)", O),
     ("steghide / stegseek", have("steghide", "stegseek"), O),
     ("zsteg", have("zsteg"), O),
-    ("tesseract", "tesseract --version 2>&1 | head -1", O),
+    ("tesseract", "command -v tesseract >/dev/null && tesseract --version 2>&1 | head -1", O),
     ("ffmpeg / sox", have("ffmpeg", "sox"), O),
     # --- cracking -------------------------------------------------------------
     ("john", have("john"), C),
@@ -93,7 +93,7 @@ CHECKS: list[tuple[str, str, bool]] = [
     ("rockyou.txt", "test -s /usr/share/wordlists/rockyou.txt", O),
     ("seclists", "test -d /usr/share/seclists", O),
     # --- web ------------------------------------------------------------------
-    ("curl", "curl --version | head -1", C),
+    ("curl", "command -v curl >/dev/null && curl --version | head -1", C),
     ("sqlmap", have("sqlmap"), O),
     ("ffuf / gobuster", have("ffuf", "gobuster"), O),
     ("jwt_tool", have("jwt_tool"), O),

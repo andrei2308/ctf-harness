@@ -1,5 +1,10 @@
 # Image tiers, follow-up: instructions for Claude Code
 
+> **Completed 2026-11-18.** Results in the Follow-up section of
+> `TIERS_REPORT.md`: the jadx line works (core went to r2 at once but lost on
+> time), medium solved 5 of 6 in one pass, and `main` was merged with Andrei's
+> go-ahead (`24d0e78`; `latest` 74/74, 305 tests, tier empty). Kept for reference.
+
 You are on Andrei's Kali machine, in the `ctf-harness` repo, branch
 `image-tiers`. `TIERS_REPORT.md` is accepted as it stands. This is the last
 round before the freeze (18 November, 20:00): three short tasks. If it is past

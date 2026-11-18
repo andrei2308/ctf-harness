@@ -240,3 +240,68 @@ To the script and the checks:
   images; the prompt line names it in the tiers.
 - `CTF_IMAGE_TIER` unset in the full image is checked by the tests; the full
   image was not rebuilt for this branch (it is not merged).
+
+## Follow-up (`CLAUDE_CODE_TIERS_FOLLOWUP.md`, 18 November afternoon)
+
+305 tests pass on the host (`24d0e78`). Rehearsal images rebuilt on both tier
+bases at that commit; same runner and settings as section 4.
+
+### 1. The jadx line, on core
+
+The forensics prompt of investigator now carries it:
+
+> Not installed in this image, do not call them: jadx (for an APK: unzip it and disassemble classes.dex with `r2 -q -A`, which reads Dalvik: `afl`, then `pdf @ <method>`); outguess; photorec; pytesseract; tesseract (look at pictures with `view_image`).
+
+The commands work as written on the suite's app (`com.example.secretcode1`,
+1.9 MB classes.dex) in `base-core`: `r2 -q -A -c afl` lists 10,275 functions
+in 7 s, `pdf @ <method>` prints Dalvik. In the agent's shell r2 prints no
+colour codes (checked in the logs). `_STAND_INS` left unchanged.
+
+| Core run | Result | Time | Tokens | Wrong | Route |
+|---|---|---|---|---|---|
+| first pass (no jadx line) | unsolved, token cap | 1,048 s | 1.52M | 1 | `which jadx ...`, then a hand-written DEX parser |
+| re-run (no jadx line) | solved | 971 s | 1.22M | 0 | found r2 by itself |
+| with the jadx line | unsolved, time | 1,177 s | 1.09M | 0 | **r2 at once**, no `which`, no parser |
+
+With the line the model went to `r2 -q -A -c "afl~MainActivity"` 7 s after
+unzipping the APK. The run was lost elsewhere: carving the APK out of the ADB
+stream took until 615 s (the same on any image), and the remaining 540 s went
+into emulating `MainActivity$1.toString()` (1,868 bytes of Dalvik) by hand from
+the disassembly, which a decompiler gives in one step. A failure for time, not
+for a missing hint: the line does its job, and what it cannot replace is jadx.
+Task closed as the brief says; no further tuning.
+
+### 2. The suite on medium
+
+| Challenge | Full (prefreeze2) | Core | **Medium** |
+|---|---|---|---|
+| encryptor | solved 75 s | solved 86 s | **solved 132 s**, 0 wrong (1 Ghidra call) |
+| bdlp | solved 58 s | solved 43 s | **solved 34 s**, 0 wrong, no Sage |
+| investigator | unsolved; re-run solved 322 s | 1 of 3 solved | **solved 956 s**, 0.92M tokens, 0 wrong (jadx used, 5 calls) |
+| adding-in-parts | solved 785 s, 4 wrong | unsolved; re-run solved 428 s | **solved 942 s**, 2 wrong (format guesses, as on full) |
+| zodiac | unsolved | unsolved | unsolved, 3 wrong (never solved on any image) |
+| wifi-get-me | solved 55 s | solved 40 s | **solved 131 s**, 0 wrong |
+
+Medium solved 5 of 6 in one pass, the full image's best. `command not found` /
+`No module named`: one, `knowledge: command not found` in adding-in-parts (the
+model typed the harness's `knowledge` tool into the shell; not a package).
+Medium's rev prompt line names only qemu. No re-runs (no failure showed a
+missing tool).
+
+### 3. Merge (Andrei's go-ahead, 18 November)
+
+`main` fast-forwarded `b4c4f12 → 24d0e78` and pushed. `ctf-harness:latest`
+rebuilt with `Dockerfile.contest` on `ctf-harness:base` (default; its layers
+are a prefix of `latest`'s):
+
+| Check | Result |
+|---|---|
+| `check_image.py` | 74/74 passed, 0 critical, 0 optional missing |
+| `pytest` in the image | 305 passed |
+| `CTF_IMAGE_TIER` | `tier=[]` |
+| `docker image ls` | `latest` 39205c41232b 15.1 GB; `base` 03a62b938197; `base-core` 14834adbc17b 2.91 GB; `base-medium` fd52b05a0af4 6.62 GB; `base-1115` kept |
+
+The `tier-test-*` tags were removed; `rehearsal-core` and `rehearsal-medium`
+remain (rehearsal only, never uploaded). This section is committed on top and
+fast-forwarded to `main` too (documentation only; the image above is built on
+the same code).

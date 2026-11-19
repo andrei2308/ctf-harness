@@ -245,7 +245,7 @@ Any OpenAI-compatible server works for rehearsal (vLLM, Ollama at
 In the image:
 
 ```bash
-python scripts/sync_knowledge.py ../ctf-notes      # notes into the image; see below
+python scripts/sync_knowledge.py ../ctf-notes --ref harness   # notes into the image; see below
 docker build -t ctf-harness:latest .
 docker run --rm ctf-harness:latest ctf-tools       # must list pwntools, z3, angr
 docker run --rm ctf-harness:latest python -m pytest -q
@@ -344,7 +344,15 @@ MCP server is not known either, so both routes are prepared.
 
 ## Your notes in the image
 
-`python scripts/sync_knowledge.py ../ctf-notes` copies the text files into
+**Which notes go in:** the `harness` branch of `ctf-notes` (since 19 November).
+It is `main` plus playbooks written for the agent (no Sage, no Ghidra, no
+phone, no interactive debugger); `main` itself stays as you wrote it.
+`python scripts/sync_knowledge.py ../ctf-notes --ref harness` reads that branch
+through git, so your working copy can stay on `main`; the command prints the
+commit it used. Run `git -C ../ctf-notes fetch` first. To carry new notes from
+`main` over: `git checkout harness && git merge main` in the notes repo.
+
+`python scripts/sync_knowledge.py ../ctf-notes` (no `--ref`) copies the text files as they are on disk into
 `knowledge/ctf-notes/`, which is git-ignored but inside the Docker build
 context. Each specialist's task prompt then gets a short index of its
 category's notes (about 2.5 KB, `CTF_PRIMER_CHARS`), and the `knowledge` tool

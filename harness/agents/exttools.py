@@ -163,6 +163,23 @@ _STAND_INS = {
 _ANY_CATEGORY = ("jadx",)
 
 
+# angr ships a decompiler (`python -m angr decompile`, angr 10): C for a function
+# in about two seconds, on stripped binaries too, with no Java. Measured on a
+# small crackme with the pinned angr 10.0.7: readable, but it dropped the loop
+# counter's increment, hence the advice to check against the disassembly.
+_GHIDRA_VIA_ANGR = ("no `ghidra_decompile`: decompile to C with "
+                    "`python3 -m angr -n decompile FILE --functions main` (without "
+                    "--functions: every function; stripped binaries have `sub_<addr>` "
+                    "names), and check odd-looking code against `objdump -d -M intel`, "
+                    "it can drop a statement")
+
+
+def _stand_in(name: str, available: set[str]) -> str:
+    if name == "ghidra" and "angr" in available:
+        return _GHIDRA_VIA_ANGR
+    return _STAND_INS.get(name, "")
+
+
 def missing_note(available: set[str], playbook: str) -> str:
     """One line for the task prompt of a smaller image tier: the tools this
     specialist's playbook names that are not installed (and the few in
@@ -181,7 +198,7 @@ def missing_note(available: set[str], playbook: str) -> str:
         if probe in available or name in available or name in missing:
             continue
         if name in _ANY_CATEGORY or re.search(r"(?<![a-z0-9_])" + re.escape(name.lower()), text):
-            missing[name] = _STAND_INS.get(name, "")
+            missing[name] = _stand_in(name, available)
     if not missing:
         return ""
     parts = [f"{n} ({why})" if why else n for n, why in sorted(missing.items())]

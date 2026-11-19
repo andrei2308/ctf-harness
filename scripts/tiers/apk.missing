@@ -1,0 +1,34 @@
+# Checks of scripts/check_image.py that the APK tier does not pass BY DESIGN
+# (scripts/tiers/apk.conf). It is a specialist tier, so critical checks are
+# among them. One check label per line, exactly as check_image.py prints it.
+angr imports
+john
+fpylll (lattices)
+web3
+pwndbg loads (as the gdb tools run it)
+one_gadget
+seccomp-tools
+ghidra headless
+ghidra_decompile tool decompiles
+qemu-user
+sage factors
+RsaCtfTool runs
+pari-gp
+steghide / stegseek
+zsteg
+tesseract
+ffmpeg / sox
+hashcat
+rockyou.txt
+seclists
+sqlmap
+ffuf / gobuster
+jwt_tool
+forge / cast (foundry)
+forge outside /root (works as non-root)
+solc runs with the agent's HOME
+smbclient
+mysql / psql / redis-cli
+php runs
+matplotlib / scipy
+node runs

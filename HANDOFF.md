@@ -119,6 +119,28 @@ it is not something to start at the venue. Both are built and backed up
 | `ctf-harness:base-medium` | Full minus SageMath, hashcat, qemu-user, commix (1.8 GB with the metasploit it pulls in), 99% of SecLists, duplicates and docs. Every tool the rehearsals used except Sage. | 6.62 GB, 2.65 GB compressed |
 | `ctf-harness:base-core` | Enough for entry and medium challenges in every category. No Sage, Ghidra, Java tools (no APK decompiling), pwndbg, Foundry, ffmpeg, tesseract. Suite: the same 5/6 as the full image over two passes; APKs cost 3x the time without jadx. | 2.91 GB, 0.93 GB compressed |
 
+### With a 1 GB limit on the compressed upload (19 November)
+
+Only core fits (0.93 GB). The plan, since challenges can be queued and images
+re-uploaded:
+
+1. **Core first, on every challenge.** It is the only small image that has run
+   real challenges.
+2. **Specialist images after it, only for what is still unsolved**, queued only
+   on the challenges they are for. A specialist holds one category's tools and
+   leaves out the rest to make room for something large.
+   - `apk` (`scripts/tiers/apk.conf`): jadx, apktool, dex2jar with their Java.
+     For Android challenges, where core solved 1 run in 3.
+     `docker build -f Dockerfile.slim --build-arg TIER=apk -t ctf-harness:base-apk .`
+     Not built or measured when written: check the compressed size.
+   - Ghidra does not fit in any image under 1 GB with the rest of a rev kit.
+     In its place the model is pointed at **angr's decompiler**, which core
+     already has: `python3 -m angr -n decompile FILE --functions main`.
+3. To add a specialist: copy `apk.conf`, change the lists and `NEED`, list the
+   checks it will not pass in `<name>.missing`, build with `TIER=<name>`.
+
+Compress with `docker save IMAGE | pigz -9`; measure before uploading.
+
 On the day the only difference is one argument:
 
 ```bash

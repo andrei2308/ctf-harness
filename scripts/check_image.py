@@ -190,7 +190,9 @@ def main() -> int:
     for label, cmd, critical in CHECKS:
         out, code = ex.run(cmd, work, 180)
         ok = code == 0
-        expected = not ok and not critical and label in by_design
+        # A generalist tier never lists a critical check (a test enforces it);
+        # a specialist tier, built for one category, may.
+        expected = not ok and label in by_design
         if expected:
             skipped += 1
             print(f"[ -- ] {label}   (left out of the {tier} tier)")

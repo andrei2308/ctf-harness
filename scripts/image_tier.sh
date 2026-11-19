@@ -22,6 +22,8 @@ export DEBIAN_FRONTEND=noninteractive PIP_NO_CACHE_DIR=1
 # shellcheck disable=SC1091
 . /etc/ctf-image-tier.conf
 
+: "${ROCKYOU:=1}"      # 0 in a specialist tier that cracks nothing
+
 VENV=/opt/venv
 VPIP="$VENV/bin/pip"
 SKIPS=/var/log/ctf-image-skips.log
@@ -112,8 +114,12 @@ stage_apt() {
   apt_update
   apt_try "${APT[@]}"
   cleanup
-  # scripts/check_image.py's critical set, as far as apt provides it.
-  need gdb objdump readelf strings file xxd binwalk exiftool tshark john curl nmap socat
+  # scripts/check_image.py's critical set, as far as apt provides it. A
+  # specialist tier (one category's tools only) names its own in NEED.
+  if [ -z "${NEED+x}" ]; then
+    NEED=(gdb objdump readelf strings file xxd binwalk exiftool tshark john curl nmap socat)
+  fi
+  need "${NEED[@]}"
   command -v nc >/dev/null || command -v netcat >/dev/null || die "critical tool missing: nc"
 }
 
@@ -223,13 +229,16 @@ stage_extras() {
 
 stage_wordlists() {
   local keep=() pat first=1 dst
+  if [ "${ROCKYOU}" != "1" ] && [ "${SECLISTS}" = "none" ]; then
+    echo "no wordlists in this tier"; return 0
+  fi
   apt_update
-  apt_try wordlists dirb
+  [ "${ROCKYOU}" = "1" ] && apt_try wordlists dirb
   # rockyou.txt, unpacked (stegseek, john and the notes all name this path).
   if [ -f /usr/share/wordlists/rockyou.txt.gz ]; then
     gunzip -f /usr/share/wordlists/rockyou.txt.gz
   fi
-  [ -s /usr/share/wordlists/rockyou.txt ] || warn "rockyou.txt is missing"
+  [ "${ROCKYOU}" != "1" ] || [ -s /usr/share/wordlists/rockyou.txt ] || warn "rockyou.txt is missing"
   case "${SECLISTS}" in
     full)
       apt_try seclists ;;
@@ -287,7 +296,7 @@ stage_finish() {
   {
     echo "tier=${TIER:-unknown}"
     for f in WITH_ANGR WITH_PWNDBG WITH_RSACTFTOOL WITH_JWT_TOOL WITH_PWNINIT \
-             WITH_FOUNDRY WITH_CYBEREDU_MCP WITH_GHIDRA WITH_SAGE SECLISTS; do
+             WITH_FOUNDRY WITH_CYBEREDU_MCP WITH_GHIDRA WITH_SAGE SECLISTS ROCKYOU; do
       echo "$f=${!f}"
     done
   } > /etc/ctf-image-tier

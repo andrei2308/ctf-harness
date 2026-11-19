@@ -282,3 +282,57 @@ def test_an_image_check_fails_when_its_program_is_absent(tmp_path):
         if r.returncode == 0:
             passed.append(label)
     assert passed == []
+
+
+# --- under a 1 GB limit: angr as the decompiler, and specialist tiers ----------
+
+def test_without_ghidra_the_model_is_pointed_at_angrs_decompiler(monkeypatch):
+    monkeypatch.setenv("CTF_IMAGE_TIER", "core")
+    note = missing_note(CORE, RevSpecialist().system_prompt())
+    assert "python3 -m angr -n decompile FILE --functions main" in note
+    # A tier without angr gets the disassembly route instead.
+    note = missing_note(CORE - {"angr"}, RevSpecialist().system_prompt())
+    assert "angr -n decompile" not in note and "r2 -q -A -c 'pdf @ main' FILE" in note
+
+
+def test_the_decompile_command_in_the_prompt_exists_in_this_angr():
+    """Runs wherever angr is installed (the images): the command the prompt
+    names must be one this angr has."""
+    pytest.importorskip("angr")
+    import sys
+    out = subprocess.run([sys.executable, "-m", "angr", "decompile", "--help"],
+                         capture_output=True, text=True, timeout=300)
+    assert out.returncode == 0 and "--functions" in out.stdout
+    out = subprocess.run([sys.executable, "-m", "angr", "--help"],
+                         capture_output=True, text=True, timeout=300)
+    assert "-n, --nopbar" in out.stdout
+
+
+def test_the_apk_tier_is_a_specialist_with_its_own_critical_set():
+    conf = _conf("apk", "APT", "NEED", "GEMS", "PIP_PKGS", "WITH_ANGR", "WITH_CYBEREDU_MCP",
+                 "SECLISTS", "ROCKYOU")
+    assert {"jadx", "apktool", "dex2jar"} <= set(conf["APT"])
+    assert {"jadx", "apktool"} <= set(conf["NEED"])
+    assert "john" not in conf["APT"] and "john" not in conf["NEED"]
+    assert conf["SECLISTS"] == ["none"] and conf["ROCKYOU"] == ["0"]
+    assert conf["WITH_CYBEREDU_MCP"] == ["1"] and "mcp<2" in conf["PIP_PKGS"]
+    # Every program the build insists on comes from a package it installs
+    # (or from the base stage).
+    provides = {"objdump": "binutils", "readelf": "binutils", "strings": "binutils",
+                "curl": None}
+    for tool in conf["NEED"]:
+        pkg = provides.get(tool, tool)
+        assert pkg is None or pkg in conf["APT"], f"apk tier insists on {tool} but does not install it"
+    # Its expected misses are real checks; critical ones are allowed here.
+    mod = _check_image()
+    labels = {label for label, _cmd, _crit in mod.CHECKS}
+    listed = mod.left_out("apk")
+    assert listed and listed <= labels
+    assert "apktool / jadx" not in listed
+
+
+def test_in_the_apk_tier_the_model_is_not_told_jadx_is_missing(monkeypatch):
+    monkeypatch.setenv("CTF_IMAGE_TIER", "apk")
+    have = CORE - {"angr", "john", "sage"}        # jadx is in CORE's probe set
+    note = missing_note(have, ForensicsSpecialist().system_prompt())
+    assert "jadx" not in note

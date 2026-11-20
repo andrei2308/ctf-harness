@@ -194,6 +194,7 @@ def config_from_env() -> Config:
                              if os.environ.get("CTF_PER_ATTEMPT_SECONDS") else None),
     )
     return Config(
+        plan_first=os.environ.get("CTF_PLAN_FIRST", "1").strip() not in ("0", "false", "no"),
         inference_backend=os.environ.get("CTF_BACKEND", "rule"),
         fast_model=os.environ.get("CTF_FAST_MODEL", "fast"),
         strong_model=os.environ.get("CTF_STRONG_MODEL") or None,

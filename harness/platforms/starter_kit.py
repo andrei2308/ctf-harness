@@ -53,7 +53,7 @@ from .base import Challenge, ChallengeKind, ConnInfo, Platform, PlatformError, S
 PLATFORM = "harness.platforms.starter_kit:StarterKitPlatform"
 # Seconds kept back from the run's time limit for the last submission and the
 # give-up note.
-RESERVE_SECONDS = 30
+RESERVE_SECONDS = 15
 NOTE_CHARS = 32
 LOG_LIMIT = 300
 # Files copied out of /code in full; above this a file is left there and named.
@@ -145,6 +145,7 @@ def bootstrap(env=os.environ) -> dict[str, str]:
     default("CTF_FAST_MODEL", "qwen3.8-27b")             # ignored by the gateway
     default("CTF_GATEWAY_STATUS", "1")                   # 400 = too long, 402/409 = stop
     default("CTF_FLAG_PIECES", "1")                      # a flag split across surfaces
+    default("CTF_SECONDS_PER_TURN", "40")                # the shared model is slow
     limit = env.get("TIME_LIMIT_SECONDS", "").strip()
     if limit.replace(".", "", 1).isdigit():
         default("CTF_TOTAL_SECONDS", str(max(60, int(float(limit)) - RESERVE_SECONDS)))

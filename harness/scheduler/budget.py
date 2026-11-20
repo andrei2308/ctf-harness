@@ -92,15 +92,15 @@ class Budget:
         # `resync` returns the seconds the harness may still use, or None; it
         # may raise RunEnded.
         self.resync = None
-        self.resync_every = 30.0
+        self.resync_every = 10.0
         self._last_sync = time.monotonic()
 
-    def _follow_platform(self) -> None:
+    def _follow_platform(self, force: bool = False) -> None:
         fn = self.resync
         if fn is None:
             return
         now = time.monotonic()
-        if now - self._last_sync < self.resync_every:
+        if now - self._last_sync < (1.0 if force else self.resync_every):
             return
         self._last_sync = now
         try:
@@ -144,6 +144,13 @@ class Budget:
         crossed. Per-attempt limits are soft (park, not abandon) and checked via
         attempt_remaining()."""
         self._follow_platform()
+        # Before the time is declared spent, ask once more: the platform hands
+        # back the time of a model call it cut, and that call has just ended
+        # (Morse Relay: the run gave up two seconds after a call was cut at
+        # three minutes, with those minutes about to be returned).
+        if (self.resync is not None and self.caps.total_seconds
+                and time.monotonic() - self._started >= self.caps.total_seconds):
+            self._follow_platform(force=True)
         with self._lock:
             c = self.caps
             if c.total_tokens and self._global.tokens >= c.total_tokens:

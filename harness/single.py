@@ -123,8 +123,20 @@ def run_challenge(*, challenge: Challenge, platform: Platform, ladder: Ladder,
     task_p = specialist.task_prompt(challenge, work_dir, conn, files, available=available)
     total = budget.time_left(cid)
     if total:
-        task_p += (f"\nTime budget for this challenge: about {max(1, round(total / 60))} "
-                   "minutes in total, which is a few dozen steps.")
+        # CTF_SECONDS_PER_TURN: what one model turn costs here, tool included.
+        # On the contest's shared model about 40 s (Morse Relay, 20 November:
+        # 11 turns in 12 minutes), which makes a run a dozen turns, not dozens.
+        per_turn = float(os.environ.get("CTF_SECONDS_PER_TURN") or 0)
+        if per_turn > 0:
+            turns = max(3, int(total / per_turn))
+            task_p += (f"\nTime budget for this challenge: about {max(1, round(total / 60))} "
+                       f"minutes in total, which is only about {turns} turns: model calls are "
+                       "slow here. Every turn must run a command. Keep your reasoning short, "
+                       "put several steps into one shell command or one script, and look "
+                       "something up only when you are stuck.")
+        else:
+            task_p += (f"\nTime budget for this challenge: about {max(1, round(total / 60))} "
+                       "minutes in total, which is a few dozen steps.")
     # Flag-shaped strings shipped in the harness's own directories are never the
     # answer in the contest; with the fixtures rig they ARE the answers.
     decoys = frozenset() if platform.answers_on_disk else known_decoys()

@@ -89,7 +89,8 @@ def test_bootstrap_maps_the_platforms_variables(monkeypatch):
     assert env["OPENAI_BASE_URL"] == "http://gateway.internal/gateway/v1"
     assert env["CTF_MODEL_HEADERS"] == "X-Run-Token=s3cret-token"
     assert env["CTF_PLATFORM"] == sk.PLATFORM and env["CTF_BACKEND"] == "openai"
-    assert env["CTF_TOTAL_SECONDS"] == "870"                 # 30 s kept for the last calls
+    assert env["CTF_TOTAL_SECONDS"] == "885"                 # 15 s kept for the last calls
+    assert env["CTF_SECONDS_PER_TURN"] == "40"
     assert env["CTF_TARGET_SCOPE"] == "any"                  # two targets
     assert env["CTF_LADDER_DEPTHS"] == "8,16"
     assert env["CTF_MODEL_TIMEOUT"] == "200"                 # @set beats the image's value
@@ -315,8 +316,8 @@ def test_the_budget_follows_the_platforms_clock(monkeypatch, gw, tmp_path):
     budget.resync, budget.resync_every = plat.seconds_left, 0.0
     gw.seconds = 900                                         # time handed back for waiting
     budget.check("c")
-    assert 868 <= budget.seconds_left() <= 870               # 900 less the 30 s reserve
-    gw.seconds = 20                                          # nearly over
+    assert 883 <= budget.seconds_left() <= 885               # 900 less the 15 s reserve
+    gw.seconds = 10                                          # nearly over
     with pytest.raises(BudgetExceeded):
         budget.check("c")
 
@@ -560,3 +561,56 @@ def test_the_team_can_send_any_challenge_to_the_generalist(monkeypatch, gw, tmp_
     plat = sk.StarterKitPlatform()
     [chal] = plat.list_challenges()
     assert isinstance(route(chal, plat.start_instance(chal.id)), GeneralistSpecialist)
+
+
+# --- what the Morse Relay timeline showed (20 November) ---------------------------------
+
+def test_time_handed_back_is_seen_before_the_run_gives_up(monkeypatch, gw, tmp_path):
+    """A model call cut by the gateway at three minutes has its time returned.
+    The run must ask the platform before deciding it is out of time, not rely
+    on a reading from before the call."""
+    _run_env(monkeypatch, gw, tmp_path)
+    plat = sk.StarterKitPlatform()
+    budget = Budget(Caps(total_seconds=570))
+    budget.resync, budget.resync_every = plat.seconds_left, 3600.0     # last reading is "fresh"
+    budget._started -= 571                                             # our clock says: spent
+    budget._last_sync = budget._started + 569                          # read 2 s ago
+    gw.seconds = 200                                                   # the platform says: 200 s left
+    budget.check("c")                                                  # no BudgetExceeded
+    assert 180 <= budget.seconds_left() <= 186
+    gw.seconds = 5
+    budget._last_sync -= 5
+    budget._started -= 400
+    with pytest.raises(BudgetExceeded):
+        budget.check("c")
+
+
+def test_the_planning_turn_can_be_switched_off(monkeypatch):
+    from harness.config import config_from_env
+    monkeypatch.delenv("GATEWAY_URL", raising=False)
+    monkeypatch.setenv("CTF_PLAN_FIRST", "0")
+    assert config_from_env().plan_first is False
+    monkeypatch.delenv("CTF_PLAN_FIRST")
+    assert config_from_env().plan_first is True
+
+
+def test_the_model_is_told_how_few_turns_it_has(monkeypatch, gw, tmp_path, http_target):
+    pytest.importorskip("openai")
+    code = _run_env(monkeypatch, gw, tmp_path, targets=f"127.0.0.1:{http_target}")
+    (code / "flag.txt").write_text("flag{\n")
+    for k in ("OPENAI_BASE_URL", "OPENAI_API_KEY", "CTF_MODEL_HEADERS", "CTF_TOTAL_SECONDS",
+              "CTF_PLATFORM", "CTF_BACKEND", "CTF_FLAG_PIECES", "CTF_GATEWAY_STATUS",
+              "CTF_SECONDS_PER_TURN"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("CTF_PLAN_FIRST", "0")
+    monkeypatch.setenv("CTF_WORK_ROOT", str(tmp_path / "work"))
+    monkeypatch.setenv("CTF_RUN_DIR", str(tmp_path / "logs"))
+    gw.llm_script = [(402, {})]
+    from harness.config import config_from_env
+    from harness.single import solve_one
+    summary = solve_one(config_from_env())
+    events = [json.loads(ln) for ln in open(summary["log"])]
+    prompt = next(e["text"] for e in events if e["kind"] == "task.prompt")
+    assert "which is only about 14 turns" in prompt and "Every turn must run a command" in prompt
+    assert not any(e["kind"] == "solver.plan" for e in events)
+    assert len(gw.llm_calls) == 1                         # no planning call before the first turn

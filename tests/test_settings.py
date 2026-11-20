@@ -71,17 +71,20 @@ def test_env_file_can_be_disabled_and_missing_is_fine(tmp_path, monkeypatch):
 
 def test_shipped_settings_file_parses_and_only_enables_safe_defaults(monkeypatch):
     for k in ("CTF_BACKEND", "CTF_LOG_MIRROR", "CTF_WORK_ROOT", "CTF_RUN_DIR", "CTF_MODEL_TIMEOUT",
-              "CTF_MAX_OUTPUT_TOKENS", "CTF_MIN_OUTPUT_TOKENS", "CTF_VISION", "CTF_FLAG_REGEX"):
+              "CTF_MAX_OUTPUT_TOKENS", "CTF_MIN_OUTPUT_TOKENS", "CTF_VISION", "CTF_FLAG_REGEX",
+              "CTF_PLAN_FIRST"):
         monkeypatch.delenv(k, raising=False)
     applied = load_env_file(DEFAULT_FILE)
     try:
         assert applied == {"CTF_BACKEND": "openai", "CTF_LOG_MIRROR": "1",
                            "CTF_WORK_ROOT": "/tmp/ctf-work", "CTF_RUN_DIR": "/var/tmp/ctf-logs",
                            # the contest's values (AISafe kit, 20 November): the
-                           # gateway caps a reply at 8192 tokens and cuts a call
-                           # at 180 s; it passes no pictures; flags are flag{32 hex}
-                           "CTF_MODEL_TIMEOUT": "240",
-                           "CTF_MAX_OUTPUT_TOKENS": "8192", "CTF_MIN_OUTPUT_TOKENS": "8192",
+                           # gateway cuts a call at 180 s and returns nothing, which
+                           # is what a reply of 8192 tokens runs into, so 3000; no
+                           # planning turn in a run of a dozen turns; no pictures;
+                           # flags are flag{32 hex}
+                           "CTF_MODEL_TIMEOUT": "240", "CTF_PLAN_FIRST": "0",
+                           "CTF_MAX_OUTPUT_TOKENS": "3000", "CTF_MIN_OUTPUT_TOKENS": "3000",
                            "CTF_VISION": "0", "CTF_FLAG_REGEX": r"flag\{[0-9a-f]{32}\}"}
         # No key, no endpoint and no platform in the file: those come from the run.
         assert not any(k.startswith("OPENAI") or k == "CTF_PLATFORM" for k in applied)

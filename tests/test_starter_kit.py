@@ -179,6 +179,8 @@ def test_category_guesses(tmp_path):
     assert sk.guess_category(files(index__php="<?php echo 1;"), ["http"]) == "web"
     assert sk.guess_category(files(jail__py="while True: print(eval(input()))  # blacklist"), ["tcp"]) == "pyjail"
     assert sk.guess_category(files(photo__png=b"\x89PNG"), []) == "stego"
+    # Source of a TCP service that is not a binary: something to script against.
+    assert sk.guess_category(files(relay__py="import socketserver, random, time\nMORSE = {}\n"), ["tcp"]) == "misc"
     assert sk.guess_category([], ["http"]) == "web"
     assert sk.guess_category([], ["tcp"]) == ""             # the router decides by the connection
 
@@ -526,3 +528,35 @@ def test_the_tool_list_recorded_at_build_time_replaces_the_probe(monkeypatch, tm
 def test_the_contest_dockerfile_records_the_tool_list():
     text = (Path(__file__).resolve().parent.parent / "Dockerfile.contest").read_text()
     assert "ENV CTF_TOOLS_CACHE=/opt/ctf-tools.json" in text and "write_tools_cache('/opt/ctf-tools.json')" in text
+
+
+# --- a service to script against (Morse Relay, 20 November) ---------------------------
+
+def test_a_misc_tcp_service_goes_to_the_generalist_not_to_pwn(monkeypatch, gw, tmp_path, tcp_target):
+    from harness.agents.specialists import GeneralistSpecialist, PwnSpecialist, route
+    code = _run_env(monkeypatch, gw, tmp_path, targets=f"127.0.0.1:{tcp_target}")
+    (code / "relay.py").write_text("import socketserver, random, time\nMORSE = {'A': '.-'}\n")
+    plat = sk.StarterKitPlatform()
+    [chal] = plat.list_challenges()
+    conn = plat.start_instance(chal.id)
+    assert chal.category == "misc"
+    spec = route(chal, conn)
+    assert isinstance(spec, GeneralistSpecialist)
+    assert {"connect", "send", "recv"} <= {t.name for t in spec.profile_for(conn).tools}
+    # ...and the model is told to script it and to give the script time.
+    assert "ONE script" in chal.description and "`timeout`" in chal.description
+    # A binary behind the same port is still pwn.
+    (code / "relay").write_bytes(b"\x7fELF" + b"\x00" * 20)
+    plat2 = sk.StarterKitPlatform()
+    [chal2] = plat2.list_challenges()
+    assert isinstance(route(chal2, plat2.start_instance(chal2.id)), PwnSpecialist)
+
+
+def test_the_team_can_send_any_challenge_to_the_generalist(monkeypatch, gw, tmp_path, tcp_target):
+    from harness.agents.specialists import GeneralistSpecialist, route
+    code = _run_env(monkeypatch, gw, tmp_path, targets=f"127.0.0.1:{tcp_target}",
+                    instructions="@category misc")
+    (code / "relay").write_bytes(b"\x7fELF" + b"\x00" * 20)
+    plat = sk.StarterKitPlatform()
+    [chal] = plat.list_challenges()
+    assert isinstance(route(chal, plat.start_instance(chal.id)), GeneralistSpecialist)

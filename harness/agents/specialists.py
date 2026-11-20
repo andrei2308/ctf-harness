@@ -403,6 +403,12 @@ def route(challenge: Challenge, conn: ConnInfo | None) -> Specialist:
         # At a word start: "rev" must match "reverse", not "previous".
         if any(re.search(r"(?<![a-z0-9])" + re.escape(k), cat) for k in keys):
             return spec
+    # "misc" (programming, encodings, puzzles, a service to script) is the
+    # generalist's, whatever the connection looks like: a host:port there is
+    # something to talk to, not a binary to exploit (Morse Relay, 20 November,
+    # went to the pwn specialist for having a TCP port).
+    if re.search(r"(?<![a-z0-9])(misc|prog|ppc|scripting|puzzle|general|trivia|osint)", cat):
+        return _GENERALIST
     # No category match: use the connection/kind signal.
     if conn and conn.url:
         return _WEB

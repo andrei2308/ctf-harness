@@ -65,6 +65,15 @@ FLAG_TEXT = (
     "part starting with flag{ comes first, the part ending with } comes last, "
     "hex-only parts go between. A complete flag written in source code may be a "
     "placeholder; the real one is in what the running challenge holds.")
+TCP_TEXT = (
+    "A raw TCP service has to be driven by ONE script (python3 with pwntools or "
+    "socket) that reads, computes and answers at once, in a loop over every round: "
+    "answering by hand, one model turn per message, is too slow and loses any "
+    "timing. If the source is given, read it first: it is the exact protocol. A "
+    "script that waits on the service can run long: give the shell call a "
+    "`timeout` (seconds, up to 900; the default is 30). Print everything the "
+    "service sends.")
+
 # Worded without the names of techniques: the notes index suggests sections by
 # the words of the description, and "reverse shells" here put that section of
 # the web notes at the top of every challenge.
@@ -210,6 +219,7 @@ _EXT = {
     "blockchain": {".sol"},
     "web": {".php", ".html", ".js", ".ts", ".jsx", ".tsx", ".ejs", ".twig", ".jsp", ".aspx"},
 }
+_SOURCE = {".py", ".js", ".ts", ".go", ".rb", ".rs", ".java", ".c", ".cpp", ".php", ".pl", ".sh", ".lua"}
 _CRYPTO_WORDS = re.compile(
     rb"Crypto\.|from Crypto|bytes_to_long|long_to_bytes|getPrime|\bRSA\b|\bAES\b|"
     rb"\bn\s*=\s*\d{20,}|\be\s*=\s*\d+|pow\(|sage\.all|EllipticCurve|\bGF\(", re.I)
@@ -253,6 +263,10 @@ def guess_category(files: list[Path], protos: list[str]) -> str:
         return "pyjail"
     if http:
         return "web"
+    if tcp and exts & _SOURCE:
+        # A TCP service whose source is given and is not a binary: something to
+        # script against (a game, an encoding, a protocol), not to exploit.
+        return "misc"
     if exts and exts <= _EXT["stego"] | {".txt", ".md"} and exts & _EXT["stego"]:
         return "stego"
     if exts & {".pyc", ".jar", ".class", ".exe", ".dll", ".wasm"}:
@@ -410,6 +424,8 @@ class StarterKitPlatform(Platform):
                        "down": f"did not answer a first probe ({p['info']}); try again"}[p["proto"]]
                 lines.append(f"{host}:{port} ({how})")
             parts.append("Live targets:\n" + "\n".join(lines))
+            if any(p["proto"] == "tcp" for p in probes.values()):
+                parts.append(TCP_TEXT)
         else:
             parts.append("No live target: everything needed is in the files.")
         parts += [FLAG_TEXT, RULES_TEXT]

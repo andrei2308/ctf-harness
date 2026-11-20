@@ -49,6 +49,7 @@ class ChallengeResult:
     top_rung: int
     reason: str
     turns: int = 0
+    status: str = ""       # the model's own one-line STATUS file, if it kept one
 
 
 def run_challenge(*, challenge: Challenge, platform: Platform, ladder: Ladder,
@@ -229,7 +230,19 @@ def run_challenge(*, challenge: Challenge, platform: Platform, ladder: Ladder,
     return ChallengeResult(challenge=cid, solved=solved,
                            flags_accepted=submitter.accepted_count(cid),
                            attempts=attempts, top_rung=rung, reason=reason,
-                           turns=state.iters_done)
+                           turns=state.iters_done, status=_read_status(work_dir))
+
+
+def _read_status(work_dir: Path) -> str:
+    """First line of the STATUS file the model may keep in its working
+    directory: where it got to, in its own words. On a platform that shows the
+    team nothing of a failed run but a short note, this is the only way to
+    learn whether it found the bug, had it working locally, or was lost."""
+    try:
+        text = (Path(work_dir) / "STATUS").read_text("utf-8", "replace")
+    except OSError:
+        return ""
+    return (text.strip().splitlines() or [""])[0][:80]
 
 
 def solve_one(config: Config, challenge_id: str | None = None) -> dict:
@@ -274,6 +287,7 @@ def solve_one(config: Config, challenge_id: str | None = None) -> dict:
             "turns": result.turns,
             "top_rung": result.top_rung,
             "reason": result.reason,
+            "status": result.status,
             "budget": budget.snapshot(),
             "submissions": submitter.summary(),
         }

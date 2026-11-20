@@ -71,6 +71,12 @@ with `@` are for the harness and are not shown to the model:
 
 Everything else you type there goes to the model as the team's notes.
 
+**The model's own status in the note.** The model is asked to keep a one-line
+`STATUS` file (16 characters: `leak ok no shell`, `local ok rem bad`). When it
+does, the note reads `pwn 16t w0 time|leak ok no shell`: category, turns, wrong
+flags, why it stopped, then the model's words. Flag- and key-shaped text is
+stripped from it.
+
 **What you see of a failed run** is the 32-character note, for example
 `rev 61t r2 w1 time`: category, model turns, highest effort rung reached (0-3),
 wrong flags sent, and why it stopped (`time`, `cost`, `tokens`, `stuck`,

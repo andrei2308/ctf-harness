@@ -429,7 +429,7 @@ class StarterKitPlatform(Platform):
                 parts.append(TCP_TEXT)
         else:
             parts.append("No live target: everything needed is in the files.")
-        parts += [FLAG_TEXT, RULES_TEXT]
+        parts += [FLAG_TEXT, RULES_TEXT, STATUS_TEXT]
         return "\n\n".join(parts)
 
     def download_files(self, challenge_id: str, dest: Path) -> list[Path]:
@@ -548,10 +548,31 @@ class StarterKitPlatform(Platform):
         self.give_up(make_note(summary, self._challenge.category if self._challenge else ""))
 
 
+STATUS_TEXT = (
+    "Keep a file named STATUS in your working directory: one line of at most 16 "
+    "characters saying where you are, in your own words (examples: `fmtstr found`, "
+    "`leak ok no shell`, `local ok rem bad`, `decoding wrong`). Rewrite it inside the "
+    "same command as your other work, never in a turn of its own. If the run fails "
+    "it is the only thing your team sees. Never put flag text, keys or file contents "
+    "in it.")
+
+
+def clean_status(text: str, room: int) -> str:
+    """The model's status line made safe for the note: the rules forbid file
+    contents, keys and flag pieces there, so anything flag- or key-shaped goes
+    (braces, the word flag, runs of hex), and only plain words are left."""
+    t = re.sub(r"(?i)flag", "", text or "")
+    t = re.sub(r"[0-9a-fA-F]{6,}", "", t)
+    t = re.sub(r"[^A-Za-z0-9 _+=:.,/%-]", "", t)
+    t = re.sub(r"\s+", " ", t).strip().lower()
+    return t[:max(0, room)].strip()
+
+
 def make_note(summary: dict, category: str = "") -> str:
     """The give-up note: category, turns, rung, wrong flags, why it stopped.
     Example: `rev 61t r2 w1 time` = rev, 61 turns, reached rung 2, one wrong
-    flag, out of time."""
+    flag, out of time. When the model kept a STATUS file, its line takes the
+    rung's place: `pwn 16t w0 time|leak ok no shell`."""
     reason = str(summary.get("reason") or "").lower()
     why = ("cost" if "cost" in reason or "budget (" in reason else
            "time" if "seconds" in reason or "time" in reason else
@@ -564,5 +585,11 @@ def make_note(summary: dict, category: str = "") -> str:
     wrong = (max(0, int(subs.get("submissions", 0)) - int(subs.get("flags_accepted", 0)))
              if isinstance(subs, dict) else 0)
     turns = summary.get("turns", 0)
+    cat = {"forensics": "for", "crypto": "cry", "blockchain": "chain", "mobile": "mob",
+           "pyjail": "jail"}.get(category, category or "misc")
+    base = f"{cat} {turns}t w{wrong} {why}"
+    status = clean_status(str(summary.get("status") or ""), NOTE_CHARS - len(base) - 1)
+    if status:
+        return f"{base}|{status}"[:NOTE_CHARS]
     note = f"{category or 'misc'} {turns}t r{summary.get('top_rung', 0)} w{wrong} {why}"
     return note[:NOTE_CHARS]

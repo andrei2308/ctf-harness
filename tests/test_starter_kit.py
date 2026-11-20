@@ -614,3 +614,36 @@ def test_the_model_is_told_how_few_turns_it_has(monkeypatch, gw, tmp_path, http_
     assert "which is only about 14 turns" in prompt and "Every turn must run a command" in prompt
     assert not any(e["kind"] == "solver.plan" for e in events)
     assert len(gw.llm_calls) == 1                         # no planning call before the first turn
+
+
+# --- the model's own status in the note (SignPost, 20 November) --------------------------
+
+def test_the_models_status_line_reaches_the_note():
+    summary = {"reason": "per-run budget exhausted: seconds global budget exceeded: 1/1",
+               "turns": 16, "top_rung": 1, "status": "leak ok no shell",
+               "submissions": {"submissions": 0, "flags_accepted": 0}}
+    assert sk.make_note(summary, "pwn") == "pwn 16t w0 time|leak ok no shell"
+    assert len(sk.make_note(dict(summary, status="x" * 80), "forensics")) == 32
+    # Without a status the note is the old one.
+    assert sk.make_note(dict(summary, status=""), "pwn") == "pwn 16t r1 w0 time"
+
+
+def test_nothing_flag_or_key_shaped_gets_into_the_note():
+    for bad in ("flag{" + "ab" * 16 + "}", "key=deadbeefcafe1234", "FLAG is flag{ab12", "{}{}<>$(id)"):
+        note = sk.make_note({"reason": "time", "turns": 3, "status": bad}, "web")
+        assert "flag" not in note.lower() and "{" not in note and "deadbeef" not in note
+        assert not __import__("re").search(r"[0-9a-f]{6,}", note)
+    assert sk.clean_status("Leak OK,  no shell!", 16) == "leak ok, no shel"
+
+
+def test_the_status_file_is_read_from_the_working_directory(tmp_path):
+    from harness.single import _read_status
+    assert _read_status(tmp_path) == ""
+    (tmp_path / "STATUS").write_text("  fmtstr found\nsecond line\n")
+    assert _read_status(tmp_path) == "fmtstr found"
+
+
+def test_the_model_is_asked_to_keep_a_status(monkeypatch, gw, tmp_path):
+    _run_env(monkeypatch, gw, tmp_path)
+    [chal] = sk.StarterKitPlatform().list_challenges()
+    assert "file named STATUS" in chal.description and "16 characters" in chal.description

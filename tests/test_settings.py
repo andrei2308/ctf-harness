@@ -80,11 +80,11 @@ def test_shipped_settings_file_parses_and_only_enables_safe_defaults(monkeypatch
                            "CTF_WORK_ROOT": "/tmp/ctf-work", "CTF_RUN_DIR": "/var/tmp/ctf-logs",
                            # the contest's values (AISafe kit, 20 November): the
                            # gateway cuts a call at 180 s and returns nothing, which
-                           # is what a reply of 8192 tokens runs into, so 3000; no
+                           # is what a reply of 8192 tokens runs into, so 4000; no
                            # planning turn in a run of a dozen turns; no pictures;
                            # flags are flag{32 hex}
                            "CTF_MODEL_TIMEOUT": "240", "CTF_PLAN_FIRST": "0",
-                           "CTF_MAX_OUTPUT_TOKENS": "3000", "CTF_MIN_OUTPUT_TOKENS": "3000",
+                           "CTF_MAX_OUTPUT_TOKENS": "4000", "CTF_MIN_OUTPUT_TOKENS": "4000",
                            "CTF_VISION": "0", "CTF_FLAG_REGEX": r"flag\{[0-9a-f]{32}\}"}
         # No key, no endpoint and no platform in the file: those come from the run.
         assert not any(k.startswith("OPENAI") or k == "CTF_PLATFORM" for k in applied)

@@ -386,12 +386,11 @@ def test_conn_from_and_describe():
     assert format_check(text) is not None            # the stated format reaches the flag check
 
 
-def test_skeleton_fails_loudly_until_it_is_written():
-    plat = StarterKitPlatform()
-    for call in (plat.list_challenges, lambda: plat.download_files("c", Path(".")),
-                 lambda: plat.start_instance("c"), lambda: plat.submit_flag("c", "x")):
-        with pytest.raises(PlatformError, match="not written yet"):
-            call()
+def test_the_contest_adapter_refuses_to_start_outside_a_run(monkeypatch):
+    monkeypatch.delenv("GATEWAY_URL", raising=False)
+    monkeypatch.delenv("RUN_TOKEN", raising=False)
+    with pytest.raises(PlatformError, match="not inside a run"):
+        StarterKitPlatform()
 
 
 # --- adapter check ---------------------------------------------------------------

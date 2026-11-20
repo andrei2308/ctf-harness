@@ -170,6 +170,10 @@ def config_from_env() -> Config:
     model/platform credentials are read by the adapters themselves. Settings in
     contest.env are applied first, as defaults under the real environment."""
     load_env_file()
+    # Inside a run of the contest platform, map its variables onto ours.
+    if os.environ.get("GATEWAY_URL") and os.environ.get("RUN_TOKEN"):
+        from .platforms.starter_kit import bootstrap
+        bootstrap()
     def _int(name, default):
         v = os.environ.get(name)
         return int(v) if v else default

@@ -19,6 +19,8 @@ a flag found via decompilation or a memory dump grounds exactly like any other.
 
 from __future__ import annotations
 
+import json
+import tempfile
 import os
 import re
 import select
@@ -99,11 +101,45 @@ _PROBE_PYMODULES = {
 }
 
 
+def cached_tools() -> set[str] | None:
+    """The probe's result as recorded when the image was built
+    (CTF_TOOLS_CACHE, set by Dockerfile.contest), or None. A run in the contest
+    gets half a CPU and 3 GB: importing twenty Python packages side by side at
+    start-up costs tens of seconds of the run's clock and a memory spike, for
+    an answer that cannot differ from the one the build got."""
+    path = os.environ.get("CTF_TOOLS_CACHE", "").strip()
+    if not path:
+        return None
+    try:
+        data = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return None
+    if isinstance(data, list) and data and all(isinstance(x, str) for x in data):
+        return set(data)
+    return None
+
+
+def write_tools_cache(path: str) -> int:
+    """Probe this image and record the result (run by Dockerfile.contest)."""
+    from .tools import LocalExecutor
+    found = _probe(LocalExecutor(), Path(tempfile.mkdtemp(prefix="probe-")))
+    Path(path).write_text(json.dumps(sorted(found)))
+    print(f"recorded {len(found)} tools in {path}")
+    return len(found)
+
+
 def probe_tools(ctx_executor, work_dir: Path) -> set[str]:
     """Return the set of analysis tools available IN THE EXECUTOR (not this
     process — in production the tools live in the worker container). Run once per
     run and fed into specialist prompts so the agent only reaches for what exists.
     """
+    cached = cached_tools()
+    if cached is not None:
+        return cached
+    return _probe(ctx_executor, work_dir)
+
+
+def _probe(ctx_executor, work_dir: Path) -> set[str]:
     bins = " ".join(shlex.quote(b) for b in _PROBE_BINARIES)
     # Imports run in parallel: angr alone takes several seconds to import, and
     # done one after another the probe could hit its timeout and report tools

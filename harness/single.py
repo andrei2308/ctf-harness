@@ -48,6 +48,7 @@ class ChallengeResult:
     attempts: int
     top_rung: int
     reason: str
+    turns: int = 0
 
 
 def run_challenge(*, challenge: Challenge, platform: Platform, ladder: Ladder,
@@ -190,16 +191,21 @@ def run_challenge(*, challenge: Challenge, platform: Platform, ladder: Ladder,
 
         # STALLED (or persistent errors): escalate. Past the top rung, keep
         # spending the remaining budget on clean-context restarts of the top rung.
-        if ladder.has_rung(rung + 1):
-            rung += 1
-            if fresh_context:
+        try:
+            if ladder.has_rung(rung + 1):
+                rung += 1
+                if fresh_context:
+                    fresh_start(rung)
+                    log.event("challenge.fresh_context", challenge=cid, rung=rung)
+            elif restarts < top_rung_restarts:
+                restarts += 1
                 fresh_start(rung)
-                log.event("challenge.fresh_context", challenge=cid, rung=rung)
-        elif restarts < top_rung_restarts:
-            restarts += 1
-            fresh_start(rung)
-            log.event("challenge.top_rung_restart", challenge=cid, restart=restarts)
-        else:
+                log.event("challenge.top_rung_restart", challenge=cid, restart=restarts)
+            else:
+                break
+        except BudgetExceeded as e:        # the handover note ran out of budget
+            reason = f"per-run budget exhausted: {e}"
+            log.event("challenge.budget_stop", challenge=cid, reason=str(e))
             break
 
     # Last chance for a flag that never reached the grader.
@@ -210,7 +216,8 @@ def run_challenge(*, challenge: Challenge, platform: Platform, ladder: Ladder,
               top_rung=rung, reason=reason)
     return ChallengeResult(challenge=cid, solved=solved,
                            flags_accepted=submitter.accepted_count(cid),
-                           attempts=attempts, top_rung=rung, reason=reason)
+                           attempts=attempts, top_rung=rung, reason=reason,
+                           turns=state.iters_done)
 
 
 def solve_one(config: Config, challenge_id: str | None = None) -> dict:
@@ -218,6 +225,12 @@ def solve_one(config: Config, challenge_id: str | None = None) -> dict:
     log = RunLog(config.run_dir, mirror=config.log_mirror)
     platform = make_platform(config)
     budget = Budget(config.caps)
+    # A platform that reports the run's clock and takes timeline events.
+    if hasattr(platform, "seconds_left"):
+        budget.resync = platform.seconds_left
+    if hasattr(platform, "on_event"):
+        log.sinks.append(platform.on_event)
+    summary: dict = {"solved": False, "reason": "crashed before the run started"}
     submitter = FlagSubmitter(platform, log, dry_run=config.dry_run,
                               penalize_wrong=config.penalize_wrong,
                               max_submits_per_flag=config.max_submits_per_flag)
@@ -246,12 +259,27 @@ def solve_one(config: Config, challenge_id: str | None = None) -> dict:
             "solved": result.solved,
             "flags_accepted": result.flags_accepted,
             "attempts": result.attempts,
+            "turns": result.turns,
             "top_rung": result.top_rung,
             "reason": result.reason,
             "budget": budget.snapshot(),
             "submissions": submitter.summary(),
         }
+    except BudgetExceeded as e:
+        # Raised outside an attempt (the plan or a handover note): the run is
+        # out of budget all the same.
+        summary = {"solved": False, "reason": f"per-run budget exhausted: {e}",
+                   "budget": budget.snapshot(), "submissions": submitter.summary()}
+    except Exception as e:  # noqa: BLE001
+        summary = {"solved": False, "reason": f"crash: {type(e).__name__}: {e}"[:300],
+                   "budget": budget.snapshot(), "submissions": submitter.summary()}
+        log.event("run.crash", error=repr(e)[:500])
+        raise
     finally:
+        try:
+            platform.finish(summary)
+        except Exception as e:  # noqa: BLE001 - the note is not worth a crash
+            log.event("platform.error", op="finish", error=repr(e)[:200])
         log.close()
         platform.close()
     summary["log"] = str(log.path)
@@ -289,8 +317,52 @@ def _parse(argv: list[str]) -> tuple[Config, str | None]:
     return cfg, challenge_id
 
 
+def _checks_first(cfg: Config) -> bool:
+    """`@preflight` / `@check-only` in the run's INSTRUCTIONS (AISafe platform):
+    print the model checks and the run's budgets to stdout, which the team can
+    read after a run on the practice challenge. Returns True when the run
+    should stop there. The checks cost model calls: use them on one run."""
+    if not (os.environ.get("GATEWAY_URL") and os.environ.get("RUN_TOKEN")):
+        return False
+    from .platforms.starter_kit import split_instructions
+    _, directives = split_instructions(os.environ.get("INSTRUCTIONS", ""))
+    if not (directives.get("preflight") or directives.get("check-only")):
+        return False
+    platform = None
+    try:
+        platform = make_platform(cfg)
+        before = platform.health() or {}
+        print(f"[checks] run {os.environ.get('RUN_ID', '?')}: health before: {before}", flush=True)
+        print(f"[checks] TARGETS={os.environ.get('TARGETS', '')!r} "
+              f"TIME_LIMIT_SECONDS={os.environ.get('TIME_LIMIT_SECONDS', '')!r} "
+              f"COST_LIMIT_CENTS={os.environ.get('COST_LIMIT_CENTS', '')!r}", flush=True)
+        from . import preflight
+        try:
+            preflight.main([])
+        except Exception as e:  # noqa: BLE001 - a failed check must still be reported
+            print(f"[checks] preflight crashed: {type(e).__name__}: {e}", flush=True)
+        after = platform.health() or {}
+        print(f"[checks] health after: {after}", flush=True)
+        try:
+            spent = float(before["centsLeft"]) - float(after["centsLeft"])
+            print(f"[checks] the model checks cost {spent:g} cents", flush=True)
+        except (KeyError, TypeError, ValueError):
+            pass
+        if directives.get("check-only"):
+            platform.give_up("check only, see stdout")
+            return True
+    except Exception as e:  # noqa: BLE001
+        print(f"[checks] could not run: {type(e).__name__}: {e}", flush=True)
+    finally:
+        if platform is not None:
+            platform.close()
+    return False
+
+
 def main(argv: list[str] | None = None) -> int:
     cfg, challenge_id = _parse(argv if argv is not None else sys.argv[1:])
+    if _checks_first(cfg):
+        return 0
     summary = solve_one(cfg, challenge_id)
     print(json.dumps(summary, indent=2, ensure_ascii=False))
     return 0

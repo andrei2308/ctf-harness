@@ -14,3 +14,7 @@ venv/
 *.session.json
 cyberedu_session*
 .cyberedu-mcp/
+
+# Saved images (the upload file is written outside the repo, but never let one in).
+*.tar
+*.tar.gz

@@ -35,6 +35,65 @@ directories fall back to a temporary one if unwritable; a tools script adds the
 clients the agent lacked; and the contest adapter has a kit and a check command.
 `CLAUDE_CODE_FINAL.md` lists what must be verified before the freeze.
 
+## The contest platform (AISafe kit, 20 November)
+
+The adapter is written (`harness/platforms/starter_kit.py`) and `contest.env` is
+filled in. It was run here against the kit's own `local/gateway.mjs` with its
+mock model: flag accepted, give-up note sent, cost cap handled. It has not run
+against the real model or inside the image.
+
+**Build, test, upload:**
+
+```bash
+git -C ../ctf-notes fetch && python scripts/sync_knowledge.py ../ctf-notes --ref harness
+scripts/aisafe_build.sh                     # builds on base-core, checks, writes ~/my-harness.tar.gz
+cd ~/aisafe-starter-kit && docker compose up --no-build --exit-code-from harness; docker compose down -v
+```
+
+The compose run must show `gateway-1 | flag ACCEPTED`. Then upload
+`~/my-harness.tar.gz` and queue the practice challenge (Sanity Check).
+
+**First run on the practice challenge:** put `@preflight` in the run's
+instructions. The harness then checks the real model first (tool calls, room to
+act in 8192 tokens, speed) and prints the result and what it cost, then solves.
+The practice challenge is the only one whose stdout you can always read.
+`@check-only` does the checks and stops.
+
+**Steering a run from its instructions** (no new upload needed). Lines starting
+with `@` are for the harness and are not shown to the model:
+
+| Line | Effect |
+|---|---|
+| `@category rev` | Send the challenge to that specialist. Without it the category is guessed from the files and the target. One of: pwn, rev, crypto, web, forensics, stego, mobile, blockchain, pyjail, misc. |
+| `@set CTF_LADDER_DEPTHS=8,16,30,50` | Any harness setting, for this run only. Overrides `contest.env`. |
+| `@name vault` | A label for the logs. |
+| `@preflight`, `@check-only` | See above. |
+
+Everything else you type there goes to the model as the team's notes.
+
+**What you see of a failed run** is the 32-character note, for example
+`rev 61t r2 w1 time`: category, model turns, highest effort rung reached (0-3),
+wrong flags sent, and why it stopped (`time`, `cost`, `tokens`, `stuck`,
+`model`, `ended`, `crash`). The timeline shows each tool call as it happens.
+
+**What the platform gives, and what the harness does with it:**
+
+- No name, category or description: only files in `/code` and `TARGETS`. The
+  description the model gets is built from your notes, the README-like files and
+  a probe of each target (HTTP or raw TCP, with its banner).
+- The model is Qwen 3.8 27B, 8192 output tokens a call (reasoning included), cut
+  at 3 minutes. Busy answers (429, 503) are waited out; a spent cost cap (402)
+  ends the run with a note.
+- The time limit is followed live from the gateway, which hands back time spent
+  waiting for the model.
+- Flags are `flag{32 hex}`, one per run. A wrong flag starts a 10 s cooldown for
+  the whole team, so only exact matches go out by themselves. A flag handed out
+  in pieces (as the practice challenge does) is assembled.
+- The gateway passes no pictures to the model, so there is no `view_image`; the
+  core image has no OCR either. Text inside pictures cannot be read.
+- A run has half a CPU and 3 GB: the tool list is recorded at build time instead
+  of probed at start-up.
+
 **Smaller image tiers (2026-11-17, branch `image-tiers`, not yet built):** in
 case the upload has a size limit, `Dockerfile.slim` builds a medium and a core
 base beside the full one. Written without Docker; `CLAUDE_CODE_TIERS.md` says

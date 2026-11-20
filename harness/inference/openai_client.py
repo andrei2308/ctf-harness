@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 
 from .base import (ContextOverflow, Effort, Message, Model, ModelError,
                    ModelResponse, ModelSpec, ModelTimeout, ToolCall, Usage, is_timeout)
@@ -33,6 +34,40 @@ def is_context_overflow(error_text: str) -> bool:
     exceeded" from a proxy), and compacting on those throws history away."""
     msg = error_text.lower()
     return any(p in msg for p in _OVERFLOW_PHRASES)
+
+
+def default_headers() -> dict[str, str]:
+    """Headers for every model call, from CTF_MODEL_HEADERS (`Name=value`, more
+    than one separated by `;`). A gateway that identifies the run by a header
+    (AISafe: X-Run-Token) is reached this way."""
+    out = {}
+    for part in os.environ.get("CTF_MODEL_HEADERS", "").split(";"):
+        name, sep, value = part.partition("=")
+        if sep and name.strip() and value.strip():
+            out[name.strip()] = value.strip()
+    return out
+
+
+class _Busy(Exception):
+    """The endpoint asked us to wait (429, or a quick 503) and said how long."""
+
+    def __init__(self, wait: float, text: str):
+        super().__init__(text)
+        self.wait = wait
+
+
+def _status(exc: BaseException) -> tuple[int | None, float]:
+    """(HTTP status, Retry-After seconds or 0) of an SDK error, when it has them."""
+    status = getattr(exc, "status_code", None)
+    headers = getattr(getattr(exc, "response", None), "headers", None) or {}
+    try:
+        retry = float(headers.get("retry-after") or 0)
+    except (TypeError, ValueError):
+        retry = 0.0
+    return (status if isinstance(status, int) else None), retry
+
+
+_sleep = time.sleep
 
 
 def _raw_args(arguments: dict):
@@ -76,6 +111,9 @@ class OpenAIModel(Model):
                   "timeout": float(os.environ.get("CTF_MODEL_TIMEOUT") or 300)}
         if self._base_url:
             kwargs["base_url"] = self._base_url
+        headers = default_headers()
+        if headers:
+            kwargs["default_headers"] = headers
         self._client = openai.OpenAI(**kwargs)
         return self._client
 
@@ -125,6 +163,24 @@ class OpenAIModel(Model):
         return wrapped
 
     def complete(self, messages: list[Message], tools: list[dict] | None = None) -> ModelResponse:
+        """One turn. A "busy" answer (429, or a 503 that came back quickly) is
+        waited out here for as long as the endpoint asks, up to
+        CTF_MODEL_BUSY_WAIT seconds (default 300) and never past the time this
+        request was given: on the contest gateway that waiting is not a failure
+        and its time is handed back to the run."""
+        waited = 0.0
+        limit = float(os.environ.get("CTF_MODEL_BUSY_WAIT") or 300)
+        while True:
+            try:
+                return self._complete(messages, tools)
+            except _Busy as b:
+                room = self.request_timeout
+                if waited + b.wait > limit or (room is not None and waited + b.wait >= room - 5):
+                    raise ModelError(str(b)) from b
+                waited += b.wait
+                _sleep(b.wait)
+
+    def _complete(self, messages: list[Message], tools: list[dict] | None = None) -> ModelResponse:
         client = self._ensure_client()
         cls = type(self)
         has_images = any(m.images for m in messages)
@@ -147,6 +203,7 @@ class OpenAIModel(Model):
         if self._send_effort:
             kwargs["reasoning_effort"] = _EFFORT_STR.get(self.spec.effort, "low")
 
+        t0 = time.monotonic()
         try:
             extra = {}
             if self.request_timeout is not None:
@@ -155,23 +212,40 @@ class OpenAIModel(Model):
             resp = client.chat.completions.create(**kwargs, **extra)
         except Exception as e:
             text = str(e).lower()
+            status, retry_after = _status(e)
+            if os.environ.get("CTF_GATEWAY_STATUS") == "1" and status in (402, 409):
+                # The contest gateway: the run's cost cap is used up (402), or
+                # the run has ended (409). Asking again cannot help.
+                from ..scheduler.budget import RunEnded
+                raise RunEnded("cost cap reached (402)" if status == 402
+                               else "the run has ended (409)") from e
+            if status == 503 and time.monotonic() - t0 >= 100:
+                # The gateway cuts a call at 3 minutes, usually because the
+                # model kept reasoning: the same handling as our own timeout.
+                raise ModelTimeout(f"503 after {time.monotonic() - t0:.0f}s: {e}") from e
+            if status in (429, 503):
+                raise _Busy(min(60.0, max(2.0, retry_after or 5.0)),
+                            f"{status} busy: {e}") from e
             # Parameter-shape rejections: remember per model and retry once. A new
             # adapter is built per attempt, so the memory lives on the class.
             if "max_completion_tokens" in text and not use_mct:
                 cls._mct_models.add(self.spec.name)
-                return self.complete(messages, tools)
+                return self._complete(messages, tools)
             if ("temperature" in text or "top_p" in text) and not drop_sampling and (
                     "unsupported" in text or "not support" in text or "only the default" in text):
                 cls._fixed_sampling_models.add(self.spec.name)
-                return self.complete(messages, tools)
+                return self._complete(messages, tools)
             # A model without vision rejects image parts (seen: glm-5.3 answers
             # 400 "messages.content.type is invalid, allowed values: ['text']").
             # Remember it and resend with the images described in text.
             if has_images and vision and ("image" in text or "content.type" in text
                                           or "content type" in text):
                 cls._no_vision_models.add(self.spec.name)
-                return self.complete(messages, tools)
-            if is_context_overflow(str(e)):
+                return self._complete(messages, tools)
+            if is_context_overflow(str(e)) or (
+                    status == 400 and os.environ.get("CTF_GATEWAY_STATUS") == "1"):
+                # The gateway answers 400 for a conversation longer than the
+                # model's context, in the provider's words, whatever they are.
                 raise ContextOverflow(str(e)) from e
             if is_timeout(e):
                 raise ModelTimeout(str(e)) from e

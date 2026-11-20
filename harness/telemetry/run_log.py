@@ -84,6 +84,9 @@ class RunLog:
         self.run_id = run_id or time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
         self._lock = threading.Lock()
         self._seq = 0
+        # Callables given every event after it is written (a platform's live
+        # timeline). A sink that raises is ignored.
+        self.sinks: list = []
         # An unwritable log directory (read-only image, another user) must not
         # stop the run: fall back to a temporary directory, and if even that
         # fails, to stderr alone.
@@ -132,6 +135,11 @@ class RunLog:
                     sys.stderr.flush()
                 except (OSError, ValueError):
                     pass
+        for sink in list(getattr(self, "sinks", ())):
+            try:
+                sink(payload)
+            except Exception:  # noqa: BLE001 - telemetry must never stop a run
+                pass
 
     # --- convenience wrappers for the events we query most ------------------
 

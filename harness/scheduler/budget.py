@@ -34,6 +34,16 @@ class BudgetExceeded(Exception):
         super().__init__(f"{resource} {scope} budget exceeded: {used:.0f}/{cap:.0f}")
 
 
+class RunEnded(BudgetExceeded):
+    """The platform says the run is over: its cost cap is used up, or it has
+    ended the run. Travels the same path as a spent budget, so the solver
+    stops cleanly and the last flag and the give-up note still go out."""
+
+    def __init__(self, why: str):
+        Exception.__init__(self, why)
+        self.resource, self.scope, self.used, self.cap = "run", "global", 0.0, 0.0
+
+
 @dataclass
 class Caps:
     """Limits. 0 / None means 'no cap on this axis' (useful for local testing)."""
@@ -76,6 +86,31 @@ class Budget:
         # Per-attempt counters reset when an attempt (re)starts.
         self._per_attempt: dict[str, _Counter] = {}
         self._started = time.monotonic()
+        # A platform that reports the time left (and extends it, as the AISafe
+        # gateway does for time spent waiting on the shared model) is asked
+        # every `resync_every` seconds, and the time cap follows its answer.
+        # `resync` returns the seconds the harness may still use, or None; it
+        # may raise RunEnded.
+        self.resync = None
+        self.resync_every = 30.0
+        self._last_sync = time.monotonic()
+
+    def _follow_platform(self) -> None:
+        fn = self.resync
+        if fn is None:
+            return
+        now = time.monotonic()
+        if now - self._last_sync < self.resync_every:
+            return
+        self._last_sync = now
+        try:
+            left = fn()
+        except BudgetExceeded:
+            raise
+        except Exception:  # noqa: BLE001 - a failed health call changes nothing
+            return
+        if left is not None and self.caps.total_seconds:
+            self.caps.total_seconds = (now - self._started) + max(0.0, float(left))
 
     # --- charging -----------------------------------------------------------
 
@@ -108,6 +143,7 @@ class Budget:
         """Raise BudgetExceeded if any *hard* cap (global or per-challenge) is
         crossed. Per-attempt limits are soft (park, not abandon) and checked via
         attempt_remaining()."""
+        self._follow_platform()
         with self._lock:
             c = self.caps
             if c.total_tokens and self._global.tokens >= c.total_tokens:

@@ -147,6 +147,36 @@ class Evidence:
     cmd: str = ""        # the tool arguments that produced it
 
 
+class _Pieces:
+    """A flag handed out in pieces, as the AISafe kit does it: `flag{` on one
+    surface, the 32 hex characters on another, the closing brace on a third.
+    The kit's own agent tracks the pieces across commands because "models often
+    print the flag, or all of its pieces, and then forget to submit it"; this
+    is the same rule. On only with CTF_FLAG_PIECES=1, and the store submits at
+    most two flags built this way: a lone `}` and a 32-hex string are common in
+    source code and hash dumps."""
+
+    _PREFIX = re.compile(rb"flag\{[0-9a-f]*")
+    _HEX = re.compile(rb"(?<![0-9a-f])[0-9a-f]{32}(?![0-9a-f])")
+    _BRACE = re.compile(rb"(^|\n)[ \t\r]*\}[ \t\r]*(\n|$)")
+
+    def __init__(self) -> None:
+        self.prefix, self.hex, self.brace = b"", b"", False
+
+    def feed(self, data: bytes) -> str | None:
+        m = self._PREFIX.search(data)
+        if m and len(m.group(0)) > len(self.prefix):
+            self.prefix = m.group(0)
+        m = self._HEX.search(data)
+        if m:
+            self.hex = m.group(0)
+        if self._BRACE.search(data):
+            self.brace = True
+        if self.prefix == b"flag{" and self.hex and self.brace:
+            return "flag{" + self.hex.decode() + "}"
+        return None
+
+
 @dataclass
 class GroundedFlag:
     """A flag that was found inside real evidence."""
@@ -183,6 +213,8 @@ class EvidenceStore:
         # Flags are latched the moment they appear, so trimming the store later
         # never discards a flag we already grounded.
         self._latched: dict[str, GroundedFlag] = {}
+        self._pieces = _Pieces() if os.environ.get("CTF_FLAG_PIECES") == "1" else None
+        self._assembled = 0
 
     def record(self, source: str, data: bytes | str, cmd: str = "") -> list[GroundedFlag]:
         """Add one observation. Returns any *newly* grounded flags it contained.
@@ -224,6 +256,17 @@ class EvidenceStore:
             if flag not in self._latched:
                 gf = GroundedFlag(flag=flag, raw=raw, source=source, evidence_seq=ev.seq)
                 self._latched[flag] = gf
+                found.append(gf)
+
+        if self._pieces is not None:
+            made = self._pieces.feed(data)
+            if (made and made not in self._latched and made not in self._ignore
+                    and self._assembled < 2 and not _in_command(made, cmd)
+                    and (self._accept is None or self._accept(made))):
+                self._assembled += 1
+                gf = GroundedFlag(flag=made, raw=made.encode(), evidence_seq=ev.seq,
+                                  source=f"{source} (assembled from pieces)")
+                self._latched[made] = gf
                 found.append(gf)
 
         self._trim()

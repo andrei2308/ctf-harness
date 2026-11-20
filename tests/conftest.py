@@ -9,3 +9,6 @@ os.environ["CTF_SUBMIT_MIN_INTERVAL"] = "0"
 # the suite must behave there as it does everywhere else. Tests of the tier
 # behaviour set it themselves.
 os.environ.pop("CTF_IMAGE_TIER", None)
+# ...nor on the tool list recorded when an image was built: tests that probe
+# must really probe.
+os.environ.pop("CTF_TOOLS_CACHE", None)

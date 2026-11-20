@@ -70,24 +70,32 @@ def test_env_file_can_be_disabled_and_missing_is_fine(tmp_path, monkeypatch):
 
 
 def test_shipped_settings_file_parses_and_only_enables_safe_defaults(monkeypatch):
-    for k in ("CTF_BACKEND", "CTF_LOG_MIRROR", "CTF_WORK_ROOT", "CTF_RUN_DIR", "CTF_MODEL_TIMEOUT"):
+    for k in ("CTF_BACKEND", "CTF_LOG_MIRROR", "CTF_WORK_ROOT", "CTF_RUN_DIR", "CTF_MODEL_TIMEOUT",
+              "CTF_MAX_OUTPUT_TOKENS", "CTF_MIN_OUTPUT_TOKENS", "CTF_VISION", "CTF_FLAG_REGEX"):
         monkeypatch.delenv(k, raising=False)
     applied = load_env_file(DEFAULT_FILE)
     try:
         assert applied == {"CTF_BACKEND": "openai", "CTF_LOG_MIRROR": "1",
                            "CTF_WORK_ROOT": "/tmp/ctf-work", "CTF_RUN_DIR": "/var/tmp/ctf-logs",
-                           # measured in the final round: GLM p99 turn 132 s
-                           "CTF_MODEL_TIMEOUT": "180"}
+                           # the contest's values (AISafe kit, 20 November): the
+                           # gateway caps a reply at 8192 tokens and cuts a call
+                           # at 180 s; it passes no pictures; flags are flag{32 hex}
+                           "CTF_MODEL_TIMEOUT": "240",
+                           "CTF_MAX_OUTPUT_TOKENS": "8192", "CTF_MIN_OUTPUT_TOKENS": "8192",
+                           "CTF_VISION": "0", "CTF_FLAG_REGEX": r"flag\{[0-9a-f]{32}\}"}
+        # No key, no endpoint and no platform in the file: those come from the run.
+        assert not any(k.startswith("OPENAI") or k == "CTF_PLATFORM" for k in applied)
     finally:
         for k in applied:
             os.environ.pop(k, None)
 
 
-def test_platform_adapter_loads_by_module_path():
+def test_platform_adapter_loads_by_module_path(monkeypatch):
+    monkeypatch.setenv("GATEWAY_URL", "http://127.0.0.1:9/gateway")
+    monkeypatch.setenv("RUN_TOKEN", "t")
+    monkeypatch.setenv("INSTRUCTIONS", "notes")
     plat = make_platform(Config(platform="harness.platforms.starter_kit:StarterKitPlatform"))
     assert isinstance(plat, StarterKitPlatform)
-    with pytest.raises(PlatformError):            # unfilled skeleton fails loudly, not silently
-        plat.list_challenges()
     with pytest.raises(ValueError, match="cannot load platform"):
         make_platform(Config(platform="harness.platforms.nope:Missing"))
 

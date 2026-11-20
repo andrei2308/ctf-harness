@@ -21,3 +21,9 @@ WORKDIR /opt/ctf-harness
 RUN --network=none find /opt/ctf-harness -mindepth 1 -delete
 COPY . /opt/ctf-harness
 RUN --network=none pip install --no-index --no-deps --no-build-isolation -e .
+
+# Which tools this image has, recorded once here instead of probed at the start
+# of every run: a contest run gets half a CPU and 3 GB, and the probe imports
+# twenty Python packages side by side.
+ENV CTF_TOOLS_CACHE=/opt/ctf-tools.json
+RUN --network=none python -c "from harness.agents.exttools import write_tools_cache; write_tools_cache('/opt/ctf-tools.json')"

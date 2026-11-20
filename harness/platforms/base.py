@@ -143,5 +143,10 @@ class Platform(abc.ABC):
         """Push back an instance's expiry. Default: re-start."""
         return self.start_instance(challenge_id)
 
+    def finish(self, summary: dict) -> None:
+        """The run is over; `summary` is what the harness prints at the end.
+        A platform that wants to be told (a give-up note) does it here.
+        Default: no-op."""
+
     def close(self) -> None:
         """Release adapter resources (sessions, subprocesses). Default: no-op."""

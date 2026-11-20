@@ -132,7 +132,7 @@ def agent_env(cwd: Path) -> dict[str, str]:
     Inherit the image's PATH so baked-in tools (a venv with pwntools, Ghidra's
     analyzeHeadless, radare2) are reachable, but NOT the rest of the
     environment: the model endpoint credentials must never reach the agent."""
-    return {
+    env = {
         "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
         "HOME": str(cwd),
         # Keep tools non-interactive: no pagers, no prompts, dumb term. An
@@ -140,6 +140,11 @@ def agent_env(cwd: Path) -> dict[str, str]:
         "PAGER": "cat", "GIT_PAGER": "cat", "TERM": "dumb",
         "DEBIAN_FRONTEND": "noninteractive",
     }
+    # The challenge's own addresses are not a secret (they are in the prompt),
+    # and the contest kit's examples read them from $TARGETS.
+    if os.environ.get("TARGETS"):
+        env["TARGETS"] = os.environ["TARGETS"]
+    return env
 
 
 class LocalExecutor(Executor):
@@ -377,7 +382,8 @@ class ShellTool(Tool):
         }
 
     def run(self, args: dict, ctx: ToolContext) -> ToolResult:
-        cmd = str(args.get("cmd", "")).strip()
+        # `command` is what most agents call it, the kit's mock model included.
+        cmd = str(args.get("cmd") or args.get("command") or "").strip()
         if not cmd:
             return ToolResult(self.name, b"", "shell:empty", error="empty command")
         why = scope_violation(cmd, ctx.conn)
